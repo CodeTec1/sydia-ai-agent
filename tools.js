@@ -10,6 +10,22 @@ const auth = new google.auth.GoogleAuth({
 });
 const calendar = google.calendar({ version: 'v3', auth });
 
+const twilio = require('twilio');
+
+const twilioClient = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+
+const TEMPLATES = {
+  BOOKING_CONFIRMED: 'HX9eed3c1924829f0ae1ecab49e84d99d9',
+  BOOKING_CANCELLED: 'HX1110acf915d7366c907299818993fa00',
+  HOT_LEAD: 'HX8e8cfe432e7ae3256d6d5c343359d85e',
+  NO_PROPERTY_FOUND: 'HX6b9d047af7d746a257c0099c9c34034e'
+};
+
+const SYDIA_WHATSAPP = process.env.SYDIA_WHATSAPP_NUMBER;
+
 // ============================================
 // TOOL: Get or create lead
 // ============================================
@@ -372,14 +388,45 @@ async function createBooking({ leadId, propertyId, slotNumber, slotMap, leadName
     .select()
     .single();
 
+  const bookingDate = slotStart.toLocaleDateString('en-KE', { timeZone: timezone });
+  const bookingTime = slotStart.toLocaleTimeString('en-KE', { timeZone: timezone, hour: 'numeric', minute: '2-digit', hour12: true });
+
+  // Notify agent via Twilio template
+  if (agentPhone) {
+    try {
+      const agentWhatsApp = agentPhone.startsWith('whatsapp:')
+        ? agentPhone
+        : `whatsapp:${agentPhone}`;
+
+      await twilioClient.messages.create({
+        from: SYDIA_WHATSAPP,
+        to: agentWhatsApp,
+        contentSid: TEMPLATES.BOOKING_CONFIRMED,
+        contentVariables: JSON.stringify({
+          "1": leadName || 'Unknown',
+          "2": leadPhone || 'N/A',
+          "3": property.property_name,
+          "4": `KES ${Number(property.price).toLocaleString()}`,
+          "5": leadPhone || 'N/A',
+          "6": 'Kilimani',
+          "7": bookingDate,
+          "8": bookingTime
+        })
+      });
+      console.log('Agent notified:', agentPhone);
+    } catch (err) {
+      console.error('Agent notification error:', err.message);
+    }
+  }
+
   return {
     success: true,
     bookingId: booking.id,
     property: property.property_name,
     address: property.address,
     price: `KES ${Number(property.price).toLocaleString()}`,
-    date: slotStart.toLocaleDateString('en-KE', { timeZone: timezone }),
-    time: slotStart.toLocaleTimeString('en-KE', { timeZone: timezone, hour: 'numeric', minute: '2-digit', hour12: true }),
+    date: bookingDate,
+    time: bookingTime,
     agentName,
     agentPhone
   };
