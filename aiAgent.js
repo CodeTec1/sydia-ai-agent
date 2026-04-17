@@ -15,6 +15,9 @@ Your job is to help clients find properties, answer their questions about listin
 ## YOUR ROLE
 Help clients find properties to buy or rent, and schedule property viewings.
 
+FIRST THING TO DO
+If you do not know the client's name yet, ask for it naturally in your first response. Once you have it, immediately call update_lead with their name. Never proceed to show properties without knowing the client's name.
+
 ## PROPERTY TYPES AVAILABLE
 Sydia Realty only deals in BUY and RENT properties. There is no land available. Never mention land or suggest it as an option. Never suggest property types or availability that you have not confirmed by calling a tool.
 
@@ -147,6 +150,7 @@ If a tool fails or returns nothing:
 - Offer next step (adjust search or connect to agent)
 - Never guess
 
+
 ## IMPORTANT
 - You work exclusively for Sydia Realty
 - All data must come from tools
@@ -212,32 +216,40 @@ const TOOL_DEFINITIONS = [
       required: ['interest', 'location']
     }
   },
+  
   {
     name: 'get_available_slots',
-    description: 'Get available viewing time slots for a property. Call this when a client wants to book a viewing. The leadPhone is already known from context — do not ask the client for it.',
+    description: 'Get available viewing time slots for a property. IMPORTANT: The propertyId must be the exact UUID from the search_properties results. Never invent or guess a property ID.',
     input_schema: {
       type: 'object',
       properties: {
         propertyId: {
           type: 'string',
-          description: 'The property UUID from the search results'
+          description: 'The exact property UUID returned by search_properties. Example: "fafc336e-5ad7-4870-9209-76731b69566f"'
         }
       },
       required: ['propertyId']
     }
   },
-  {
+
+   {
     name: 'create_booking',
-    description: 'Create a confirmed viewing booking. Call this after the client confirms their preferred time slot. The client phone number is already known — never ask for it.',
+    description: 'Create a confirmed viewing booking. IMPORTANT: propertyId must be the exact UUID from search_properties results. slotNumber must be the number the client chose from get_available_slots.',
     input_schema: {
       type: 'object',
       properties: {
-        leadId: { type: 'string', description: 'Lead ID from context' },
-        propertyId: { type: 'string', description: 'Property UUID' },
-        slotNumber: { type: 'number', description: 'The slot number the client chose' },
-        slotMap: { type: 'string', description: 'JSON slot map from get_available_slots' },
-        leadName: { type: 'string', description: 'Client name' },
-        leadPhone: { type: 'string', description: 'Client phone — already known from context, do not ask client' }
+        propertyId: {
+          type: 'string',
+          description: 'Exact property UUID from search_properties results'
+        },
+        slotNumber: {
+          type: 'number',
+          description: 'The slot number chosen by the client from get_available_slots'
+        },
+        leadName: {
+          type: 'string',
+          description: 'Client name'
+        }
       },
       required: ['propertyId', 'slotNumber']
     }
@@ -287,44 +299,11 @@ async function executeTool(toolName, toolInput, context) {
 
     case 'search_properties': {
       const result = await tools.searchProperties(toolInput);
+
       if (result.properties && result.properties.length > 0) {
-        context.lastProperties = result.properties;
-        // Save search results to lead immediately
-        if (context.leadId) {
-          const searchResultsToSave = result.properties.map((p, i) => ({
-            number: i + 1,
-            id: p.id,
-            name: p.name,
-            price: p.rawPrice,
-            location: p.location,
-            address: p.address
-          }));
-          await tools.updateLead(context.leadId, {
-            search_results: searchResultsToSave,
-            interest: toolInput.interest || null,
-            location: toolInput.location || null
-          });
+        if (!context.propertiesAlreadySent) {
+          context.lastProperties = result.properties;
         }
-      }
-      return result;
-    }
-
-    case 'get_available_slots': {
-      const result = await tools.getAvailableSlots(toolInput.propertyId);
-      if (result.slotMap && context.leadId) {
-        context.currentSlotMap = JSON.stringify(result.slotMap);
-        await tools.updateLead(context.leadId, {
-          available_slots: JSON.stringify(result.slotMap),
-          selected_property_id: toolInput.propertyId
-        });
-      }
-      return result;
-    }
-
-    case 'search_properties': {
-      const result = await tools.searchProperties(toolInput);
-
-      if (result.properties && result.properties.length > 0) {
         context.lastProperties = result.properties;
 
         const updateFields = {
@@ -350,25 +329,69 @@ async function executeTool(toolName, toolInput, context) {
 
       return result;
     }
-    case 'update_lead': {
-      const id = toolInput.leadId || context.leadId;
-      if (!id) {
-        console.error('update_lead called without lead ID');
-        return { success: false, error: 'No lead ID' };
+
+    case 'get_available_slots': {
+      const result = await tools.getAvailableSlots(toolInput.propertyId);
+
+      if (result.slotMap && context.leadId) {
+        context.currentSlotMap = JSON.stringify(result.slotMap);
+
+        // Only save available_slots, NOT selected_property_id
+        // selected_property_id must be a real property UUID from search results
+        await tools.updateLead(context.leadId, {
+          available_slots: JSON.stringify(result.slotMap)
+        });
+
+        // Save property ID to context only — not to DB yet
+        context.currentPropertyId = toolInput.propertyId;
       }
 
-      // Update local context too
+      return result;
+    }
+
+    case 'create_booking': {
+      const bookingInput = {
+        leadId: context.leadId,
+        propertyId: toolInput.propertyId || context.currentPropertyId,
+        slotNumber: toolInput.slotNumber,
+        slotMap: toolInput.slotMap || context.currentSlotMap,
+        leadName: toolInput.leadName || context.leadName || 'Client',
+        leadPhone: context.leadPhone
+      };
+
+      console.log('Booking input:', JSON.stringify(bookingInput));
+
+      if (!bookingInput.propertyId) {
+        return { success: false, error: 'No property ID. Please select a property first.' };
+      }
+
+      if (!bookingInput.slotMap) {
+        return { success: false, error: 'No slot map. Please get available slots first.' };
+      }
+
+      const result = await tools.createBooking(bookingInput);
+      console.log('createBooking result:', JSON.stringify(result));
+
+      if (result.success) {
+        context.lastBooking = result;
+      }
+
+      return result;
+    }
+
+    case 'update_lead': {
+      const id = toolInput.leadId || context.leadId;
+      if (!id) return { success: false, error: 'No lead ID' };
+
       if (toolInput.fields?.name || toolInput.fields?.Name) {
         context.leadName = toolInput.fields.name || toolInput.fields.Name;
-      }
-      if (toolInput.fields?.budget || toolInput.fields?.Budget) {
-        context.leadBudget = toolInput.fields.budget || toolInput.fields.Budget;
       }
 
       return await tools.updateLead(id, toolInput.fields);
     }
 
     default:
+      console.error(`Unknown tool called: ${toolName}`);
       return { error: `Unknown tool: ${toolName}` };
   }
 }
@@ -387,7 +410,8 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
     leadPhone: cleanPhone,
     currentSlotMap: lead.available_slots || null,
     lastProperties: null,
-    lastBooking: null
+    lastBooking: null,
+    propertiesAlreadySent: false
   };
 
   console.log('Processing message for lead:', lead.id, '| Phone:', cleanPhone);
@@ -414,7 +438,7 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
     let response;
     try {
       response = await client.messages.create({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 1024,
         system: SYSTEM_PROMPT,
         tools: TOOL_DEFINITIONS,
