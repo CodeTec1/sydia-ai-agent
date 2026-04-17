@@ -6,7 +6,10 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // ============================================
 // SYSTEM PROMPT
 // ============================================
-const SYSTEM_PROMPT = `You are Nina, a professional and warm property sales assistant for Sydia Realty, a premium real estate company in Nairobi, Kenya.
+const SYSTEM_PROMPT = `CRITICAL FORMATTING RULE: Never use asterisks (*), underscores (_), or any markdown formatting in your messages. WhatsApp will display these as literal characters and it looks unprofessional. Write in plain natural text only.
+
+
+You are Nina, a professional and warm property sales assistant for Sydia Realty, a premium real estate company in Nairobi, Kenya.
 
 Your job is to help clients find properties, answer their questions about listings, and schedule property viewings.
 
@@ -62,6 +65,9 @@ Do NOT ask unnecessary follow-up questions if you already have enough informatio
 6. If you need booking slots, call get_available_slots
 7. If you do not have data from a tool call, call the tool immediately
 8. NEVER present properties you have not fetched in this conversation
+
+## WHEN NO PROPERTIES ARE FOUND
+If search_properties returns an empty list but includes a suggestion object, use that data to tell the client what IS available. For example "I don't have a 4 bedroom in that range, but I do have 2 and 3 bedroom options from KES 10M to 18M — would any of those work for you?"
 
 ## USER INPUT UNDERSTANDING
 Users may provide multiple details in one message. Extract:
@@ -244,66 +250,109 @@ const TOOL_DEFINITIONS = [
 // EXECUTE TOOL CALL
 // ============================================
 async function executeTool(toolName, toolInput, context) {
-  console.log(`Tool called: ${toolName}`, JSON.stringify(toolInput));
+  console.log(`Tool called: ${toolName}`);
 
-  try {
-    switch (toolName) {
-      case 'get_locations':
-        return await tools.getLocations(toolInput.interest);
+  switch (toolName) {
 
-      case 'get_bedroom_options':
-        return await tools.getBedroomOptions(toolInput.interest, toolInput.location);
-
-      case 'get_completion_dates':
-        return await tools.getCompletionDates(
-          toolInput.interest,
-          toolInput.location,
-          toolInput.bedrooms,
-          toolInput.budget
-        );
-
-      case 'search_properties':
-        const searchResult = await tools.searchProperties(toolInput);
-        if (searchResult.properties && searchResult.properties.length > 0) {
-          context.lastProperties = searchResult.properties;
-        }
-        return searchResult;
-        return await tools.searchProperties(toolInput);
-
-      case 'get_available_slots':
-        const slotsResult = await tools.getAvailableSlots(toolInput.propertyId);
-        // Save slot map to lead for use in booking
-        if (context.leadId && slotsResult.slotMap) {
-          await tools.updateLead(context.leadId, {
-            available_slots: JSON.stringify(slotsResult.slotMap)
-          });
-          context.currentSlotMap = JSON.stringify(slotsResult.slotMap);
-        }
-        return slotsResult;
-
-      case 'create_booking':
-        const bookingInput = {
-          ...toolInput,
-          leadId: toolInput.leadId || context.leadId,
-          leadName: toolInput.leadName || context.leadName,
-          leadPhone: toolInput.leadPhone || context.leadPhone,
-          slotMap: toolInput.slotMap || context.currentSlotMap
-        };
-        const bookingResult = await tools.createBooking(bookingInput);
-        if (bookingResult.success) {
-          context.lastBooking = bookingResult;
-        }
-        return bookingResult;
-
-      case 'update_lead':
-        return await tools.updateLead(toolInput.leadId, toolInput.fields);
-
-      default:
-        return { error: `Unknown tool: ${toolName}` };
+    case 'get_locations': {
+      return await tools.getLocations(toolInput.interest);
     }
-  } catch (err) {
-    console.error(`Tool error in ${toolName}:`, err.message);
-    return { error: err.message };
+
+    case 'get_bedroom_options': {
+      return await tools.getBedroomOptions(toolInput.interest, toolInput.location);
+    }
+
+    case 'get_completion_dates': {
+      return await tools.getCompletionDates(
+        toolInput.interest,
+        toolInput.location,
+        toolInput.bedrooms || null,
+        toolInput.budget || null
+      );
+    }
+
+    case 'search_properties': {
+      const result = await tools.searchProperties(toolInput);
+      if (result.properties && result.properties.length > 0) {
+        context.lastProperties = result.properties;
+        // Save search results to lead immediately
+        if (context.leadId) {
+          const searchResultsToSave = result.properties.map((p, i) => ({
+            number: i + 1,
+            id: p.id,
+            name: p.name,
+            price: p.rawPrice,
+            location: p.location,
+            address: p.address
+          }));
+          await tools.updateLead(context.leadId, {
+            search_results: searchResultsToSave,
+            interest: toolInput.interest || null,
+            location: toolInput.location || null
+          });
+        }
+      }
+      return result;
+    }
+
+    case 'get_available_slots': {
+      const result = await tools.getAvailableSlots(toolInput.propertyId);
+      if (result.slotMap && context.leadId) {
+        context.currentSlotMap = JSON.stringify(result.slotMap);
+        await tools.updateLead(context.leadId, {
+          available_slots: JSON.stringify(result.slotMap),
+          selected_property_id: toolInput.propertyId
+        });
+      }
+      return result;
+    }
+
+    case 'create_booking': {
+      const bookingInput = {
+        leadId: toolInput.leadId || context.leadId,
+        propertyId: toolInput.propertyId,
+        slotNumber: toolInput.slotNumber,
+        slotMap: toolInput.slotMap || context.currentSlotMap,
+        leadName: toolInput.leadName || context.leadName || 'Client',
+        leadPhone: context.leadPhone  // Always use from context, never from Claude
+      };
+
+      console.log('Creating booking with:', JSON.stringify(bookingInput));
+
+      if (!bookingInput.slotMap) {
+        return { success: false, error: 'No slot map available. Please get available slots first.' };
+      }
+
+      const result = await tools.createBooking(bookingInput);
+      if (result.success) {
+        context.lastBooking = result;
+        // Update lead status
+        if (context.leadId) {
+          await tools.updateLead(context.leadId, {
+            status: 'Booked',
+            conversation_stage: 'booking_confirmed'
+          });
+        }
+      }
+      return result;
+    }
+
+    case 'update_lead': {
+      if (!toolInput.leadId && !context.leadId) {
+        return { success: false, error: 'No lead ID available' };
+      }
+      const id = toolInput.leadId || context.leadId;
+
+      // Update context name if being set
+      if (toolInput.fields?.name) {
+        context.leadName = toolInput.fields.name;
+      }
+
+      return await tools.updateLead(id, toolInput.fields);
+    }
+
+    default:
+      return { error: `Unknown tool: ${toolName}` };
   }
 }
 
@@ -317,13 +366,15 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
 
   const context = {
     leadId: lead.id,
-    leadName: lead.name,
+    leadName: lead.name || null,
     leadPhone: cleanPhone,
     currentSlotMap: lead.available_slots || null,
-    lastProperties: null
+    lastProperties: null,
+    lastBooking: null
   };
 
-  // Build messages array from history
+  console.log('Processing message for lead:', lead.id, '| Phone:', cleanPhone);
+
   const messages = [
     ...conversationHistory.map(h => ({
       role: h.role,
@@ -335,52 +386,34 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
     }
   ];
 
-  let response = null;
   let finalText = null;
+  let iterations = 0;
+  const MAX_ITERATIONS = 10;
 
-  // Agentic loop — keep going until Claude gives a final text response
-  while (true) {
-    response = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT,
-      tools: TOOL_DEFINITIONS,
-      messages: messages
-    });
+  while (iterations < MAX_ITERATIONS) {
+    iterations++;
+    console.log(`--- AI iteration ${iterations} ---`);
 
-    console.log('Claude stop reason:', response.stop_reason);
-
-    // If Claude wants to use a tool
-    if (response.stop_reason === 'tool_use') {
-      // Add Claude's response to messages
-      messages.push({
-        role: 'assistant',
-        content: response.content
+    let response;
+    try {
+      response = await client.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1024,
+        system: SYSTEM_PROMPT,
+        tools: TOOL_DEFINITIONS,
+        messages: messages
       });
-
-      // Execute all tool calls
-      const toolResults = [];
-      for (const block of response.content) {
-        if (block.type === 'tool_use') {
-          const result = await executeTool(block.name, block.input, context);
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: JSON.stringify(result)
-          });
-        }
-      }
-
-      // Add tool results to messages and loop
-      messages.push({
-        role: 'user',
-        content: toolResults
-      });
-
-      continue;
+    } catch (err) {
+      console.error('Claude API error:', err.message);
+      return {
+        text: 'Sorry, I am having trouble right now. Please try again in a moment.',
+        properties: null
+      };
     }
 
-    // Claude gave a final text response
+    console.log('Stop reason:', response.stop_reason);
+    console.log('Content blocks:', response.content.map(b => b.type).join(', '));
+
     if (response.stop_reason === 'end_turn') {
       for (const block of response.content) {
         if (block.type === 'text') {
@@ -391,11 +424,55 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
       break;
     }
 
+    if (response.stop_reason === 'tool_use') {
+      messages.push({
+        role: 'assistant',
+        content: response.content
+      });
+
+      const toolResults = [];
+
+      for (const block of response.content) {
+        if (block.type !== 'tool_use') continue;
+
+        console.log(`Executing tool: ${block.name}`);
+        console.log('Tool input:', JSON.stringify(block.input));
+
+        let result;
+        try {
+          result = await executeTool(block.name, block.input, context);
+          console.log(`Tool result for ${block.name}:`, JSON.stringify(result).substring(0, 200));
+        } catch (err) {
+          console.error(`Tool execution error for ${block.name}:`, err.message);
+          result = { error: err.message };
+        }
+
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: block.id,
+          content: JSON.stringify(result)
+        });
+      }
+
+      messages.push({
+        role: 'user',
+        content: toolResults
+      });
+
+      continue;
+    }
+
+    // Unexpected stop reason
+    console.log('Unexpected stop reason:', response.stop_reason);
     break;
   }
 
+  if (!finalText) {
+    finalText = 'I am sorry, something went wrong. Please try again.';
+  }
+
   return {
-    text: finalText || "I'm sorry, something went wrong. Please try again.",
+    text: finalText,
     properties: context.lastProperties || null
   };
 }

@@ -172,6 +172,38 @@ async function searchProperties({ interest, location, bedrooms, budget, isOffpla
     return { properties: [], count: 0 };
   }
 
+  const { data, error } = await query;
+
+  if (error || !data || data.length === 0) {
+    // Find what IS available to suggest alternatives
+    const { data: alternatives } = await supabase
+      .from('properties')
+      .select('bedrooms, price, completion_date, location')
+      .eq('tenant_id', TENANT_ID)
+      .ilike('type', normalizedInterest)
+      .ilike('location', normalizedLocation)
+      .eq('available', true)
+      .limit(10);
+
+    let suggestion = null;
+    if (alternatives && alternatives.length > 0) {
+      const beds = [...new Set(alternatives.map(r => r.bedrooms).filter(Boolean))].sort();
+      const prices = alternatives.map(r => r.price).filter(Boolean);
+      const minPrice = Math.min(...prices);
+      const maxPrice = Math.max(...prices);
+
+      suggestion = {
+        availableBedrooms: beds,
+        priceRange: {
+          min: `KES ${Number(minPrice).toLocaleString()}`,
+          max: `KES ${Number(maxPrice).toLocaleString()}`
+        }
+      };
+    }
+
+    return { properties: [], count: 0, suggestion };
+  }
+
   const properties = data.map((p, i) => ({
     number: i + 1,
     id: p.id,
