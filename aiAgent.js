@@ -39,10 +39,18 @@ Your job is to help clients find properties, answer their questions about listin
 ## ON BUDGET
 - Always show price ranges from the database before asking for budget
 - After showing properties, gently ask if the budget works for them
+- If a user mentions a budget in USD or GBP or EUR, convert to KES using the current approximate rate before searching.
 
 ## ON MEMORY
 - You know the client's name, budget, preferences if they have been mentioned
 - Never ask for information the client has already given you
+
+## WHEN PRESENTING PROPERTIES
+When you find properties, briefly summarize what you found in text. 
+The system will automatically send the detailed property cards with photos separately.
+So you do not need to list every detail — just say something like 
+"Great news! I found 3 properties matching your criteria in Westlands. 
+Here they are 👇" and the detailed cards will follow automatically.
 
 ## IMPORTANT
 - You work exclusively for Sydia Realty
@@ -177,6 +185,11 @@ async function executeTool(toolName, toolInput, context) {
         );
 
       case 'search_properties':
+        const searchResult = await tools.searchProperties(toolInput);
+        if (searchResult.properties && searchResult.properties.length > 0) {
+          context.lastProperties = searchResult.properties;
+        }
+        return searchResult;
         return await tools.searchProperties(toolInput);
 
       case 'get_available_slots':
@@ -238,7 +251,7 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
   // Agentic loop — keep going until Claude gives a final text response
   while (true) {
     response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
       system: SYSTEM_PROMPT,
       tools: TOOL_DEFINITIONS,
@@ -291,7 +304,10 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
     break;
   }
 
-  return finalText || "I'm sorry, something went wrong. Please try again.";
+  return {
+    text: finalText || "I'm sorry, something went wrong. Please try again.",
+    properties: context.lastProperties || null
+  };
 }
 
 module.exports = { processMessage };

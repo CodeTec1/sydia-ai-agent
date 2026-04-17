@@ -46,7 +46,7 @@ router.post('/', async (req, res) => {
     await tools.saveMessage(lead.id, 'user', message);
 
     // Process through AI
-    const aiResponse = await processMessage({
+    const { text: aiResponse, properties } = await processMessage({
       userMessage: message,
       lead,
       conversationHistory: history
@@ -55,18 +55,54 @@ router.post('/', async (req, res) => {
     // Save AI response to history
     await tools.saveMessage(lead.id, 'assistant', aiResponse);
 
-    // Send response to user
-    // Split long messages if needed
-    if (aiResponse.length > 1500) {
-      const chunks = aiResponse.match(/.{1,1500}/gs) || [aiResponse];
-      for (let i = 0; i < chunks.length; i++) {
-        await sendMessage(from, chunks[i]);
-        if (i < chunks.length - 1) await delay(1000);
-      }
-    } else {
-      await sendMessage(from, aiResponse);
-    }
+    // Send text response
+    await sendMessage(from, aiResponse);
 
+    // If properties were found, send each one with photo
+    if (properties && properties.length > 0) {
+      await delay(1500);
+
+      // Save search results to lead for booking reference
+      const searchResultsToSave = properties.map((p, i) => ({
+        number: i + 1,
+        id: p.id,
+        name: p.name,
+        price: p.rawPrice,
+        location: p.location,
+        address: p.address
+      }));
+
+      await tools.updateLead(lead.id, { search_results: searchResultsToSave });
+
+      for (let i = 0; i < properties.length; i++) {
+        const p = properties[i];
+        const sizeText = p.bedrooms === 0 ? 'Studio' : p.bedrooms ? `${p.bedrooms} Bed` : '';
+        const sqmText = p.sqm ? ` (${p.sqm}sqm)` : '';
+
+        const propertyMsg =
+          `🏢 *PROPERTY ${i + 1}*\n` +
+          `──────────\n\n` +
+          (p.project ? `*${p.project}*\n` : '') +
+          `*${p.name}*\n\n` +
+          `📍 ${p.location}\n` +
+          `💰 ${p.price}\n` +
+          (sizeText ? `🛏 ${sizeText}${sqmText}\n` : '') +
+          (p.completion ? `🏗 Completion: ${p.completion}\n` : '') +
+          `📮 ${p.address}` +
+          (p.description ? `\n\n${p.description}` : '') +
+          `\n\n──────────\n` +
+          `Reply *${i + 1}* to book a viewing`;
+
+        await sendMessage(from, propertyMsg, p.photo || null);
+        if (i < properties.length - 1) await delay(3000);
+      }
+
+      await delay(properties.length * 1500);
+      await sendMessage(
+        from,
+        `I've sent you ${properties.length} propert${properties.length === 1 ? 'y' : 'ies'}. 🏡\n\nWhich one would you like to view? Just reply with the number.`
+      );
+    }
   } catch (err) {
     console.error('Webhook error:', err);
     await sendMessage(from, 'Sorry, something went wrong. Please try again in a moment.');
