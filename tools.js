@@ -67,6 +67,7 @@ async function updateLead(leadId, fields) {
 
   // Map Claude-friendly field names to actual DB column names
   const mapped = {};
+  const skipColumns = ['bedrooms', 'leadId', 'leadName', 'leadPhone'];
   const fieldMap = {
     name: 'name',
     Name: 'name',
@@ -91,6 +92,7 @@ async function updateLead(leadId, fields) {
   };
 
   for (const [key, value] of Object.entries(fields)) {
+    if (skipColumns.includes(key)) continue;
     const dbKey = fieldMap[key] || key;
     // Convert budget to string if it is a number
     if (dbKey === 'budget' && typeof value === 'number') {
@@ -471,6 +473,17 @@ async function createBooking({ leadId, propertyId, slotNumber, slotMap, leadName
 
     console.log('Property found:', property.property_name);
 
+    // Get lead budget for notification
+    const { data: leadRecord } = await supabase
+      .from('leads')
+      .select('budget')
+      .eq('id', leadId)
+      .single();
+
+    const leadBudget = leadRecord?.budget
+      ? `KES ${Number(leadRecord.budget).toLocaleString()}`
+      : 'N/A';
+
     // Get agent — try from property first, then fall back to active agent
     let agentName = property.agents?.agent_name || null;
     let agentPhone = property.agents?.phone || null;
@@ -579,7 +592,7 @@ async function createBooking({ leadId, propertyId, slotNumber, slotMap, leadName
             "2": leadPhone || 'N/A',
             "3": property.property_name,
             "4": `KES ${Number(property.price || 0).toLocaleString()}`,
-            "5": leadPhone || 'N/A',
+            "5": leadBudget,
             "6": property.address || 'N/A',
             "7": bookingDate,
             "8": bookingTime

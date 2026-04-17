@@ -151,7 +151,7 @@ If a tool fails or returns nothing:
 - Never guess
 
 WHEN NOT TO SEARCH
-If the client asks a question about a property that was already shown in this conversation, answer from the conversation history. Do not call search_properties again. Only call search_properties when the client wants to see new or different properties.
+Once you have shown a client properties in this conversation, do not call search_properties again unless the client explicitly asks to see different properties with new criteria. If the client asks about a specific property from the list, refers to a property number, or wants to book — work from the conversation history. Never re-search just to get property IDs. The property IDs are already in the conversation history from the previous search.
 
 ## IMPORTANT
 - You work exclusively for Sydia Realty
@@ -259,19 +259,28 @@ const TOOL_DEFINITIONS = [
 
   {
     name: 'update_lead',
-    description: 'Update lead information in the CRM. Call this when you learn the client name, budget, interest, or other key info.',
+    description: 'Save client information to the CRM database. Call this whenever you learn the client name, budget, interest, location, or bedroom preference. The lead ID is handled automatically by the system — never include it as a parameter.',
     input_schema: {
       type: 'object',
       properties: {
-        leadId: { type: 'string' },
         fields: {
           type: 'object',
-          description: 'Fields to update: name, budget, interest, location, size, status, etc.'
+          description: 'Fields to update. Use these exact key names: name, budget, interest, location, size, status, is_offplan, completion_range',
+          properties: {
+            name: { type: 'string', description: 'Client full name' },
+            budget: { type: 'number', description: 'Budget in KES as a number e.g. 15000000' },
+            interest: { type: 'string', description: 'Buy or Rent' },
+            location: { type: 'string', description: 'Area name e.g. Westlands' },
+            size: { type: 'string', description: 'e.g. 2 bedroom or Studio' },
+            is_offplan: { type: 'boolean' },
+            completion_range: { type: 'string' },
+            status: { type: 'string' }
+          }
         }
       },
-      required: ['leadId', 'fields']
+      required: ['fields']
     }
-  }
+  },
 ];
 
 // ============================================
@@ -303,10 +312,13 @@ async function executeTool(toolName, toolInput, context) {
       const result = await tools.searchProperties(toolInput);
 
       if (result.properties && result.properties.length > 0) {
+        // Only send property cards if this is a fresh search, not a re-search
+        // A re-search happens when Claude searches again mid-conversation
+        // We detect this by checking if search_results already exist on the lead
         if (!context.propertiesAlreadySent) {
           context.lastProperties = result.properties;
+          context.propertiesAlreadySent = true;
         }
-        context.lastProperties = result.properties;
 
         const updateFields = {
           search_results: result.properties.map((p, i) => ({
@@ -331,7 +343,7 @@ async function executeTool(toolName, toolInput, context) {
 
       return result;
     }
-
+      
     case 'get_available_slots': {
       const result = await tools.getAvailableSlots(toolInput.propertyId);
 
@@ -382,14 +394,23 @@ async function executeTool(toolName, toolInput, context) {
     }
 
     case 'update_lead': {
-      const id = toolInput.leadId || context.leadId;
-      if (!id) return { success: false, error: 'No lead ID' };
+      // Always use context.leadId — Claude should never provide the leadId
+      const id = context.leadId;
+      if (!id) {
+        console.error('update_lead called but no leadId in context');
+        return { success: false, error: 'No lead ID in context' };
+      }
 
       if (toolInput.fields?.name || toolInput.fields?.Name) {
         context.leadName = toolInput.fields.name || toolInput.fields.Name;
       }
 
-      return await tools.updateLead(id, toolInput.fields);
+      // Remove bedrooms from fields if present — that column does not exist in leads table
+      const safeFields = { ...toolInput.fields };
+      delete safeFields.bedrooms;
+      delete safeFields.leadId;
+
+      return await tools.updateLead(id, safeFields);
     }
 
     default:
