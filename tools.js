@@ -58,13 +58,64 @@ async function getOrCreateLead(phone, name = null) {
 // TOOL: Update lead
 // ============================================
 async function updateLead(leadId, fields) {
-  const { data } = await supabase
+  console.log('Updating lead:', leadId, '| Fields:', JSON.stringify(fields));
+
+  if (!leadId) {
+    console.error('updateLead called without leadId');
+    return { success: false, error: 'No leadId provided' };
+  }
+
+  // Map Claude-friendly field names to actual DB column names
+  const mapped = {};
+  const fieldMap = {
+    name: 'name',
+    Name: 'name',
+    budget: 'budget',
+    Budget: 'budget',
+    interest: 'interest',
+    Interest: 'interest',
+    location: 'location',
+    Location: 'location',
+    size: 'size',
+    Size: 'size',
+    status: 'status',
+    Status: 'status',
+    conversation_stage: 'conversation_stage',
+    is_offplan: 'is_offplan',
+    completion_range: 'completion_range',
+    search_results: 'search_results',
+    available_slots: 'available_slots',
+    selected_property_id: 'selected_property_id',
+    last_viewed_property: 'last_viewed_property',
+    awaiting_followup_response: 'awaiting_followup_response'
+  };
+
+  for (const [key, value] of Object.entries(fields)) {
+    const dbKey = fieldMap[key] || key;
+    // Convert budget to string if it is a number
+    if (dbKey === 'budget' && typeof value === 'number') {
+      mapped[dbKey] = value.toString();
+    } else {
+      mapped[dbKey] = value;
+    }
+  }
+
+  console.log('Mapped update fields:', JSON.stringify(mapped));
+
+  const { data, error } = await supabase
     .from('leads')
-    .update(fields)
+    .update(mapped)
     .eq('id', leadId)
     .select()
     .single();
-  return data;
+
+  if (error) {
+    console.error('updateLead DB error:', JSON.stringify(error));
+    return { success: false, error: error.message };
+  }
+
+  console.log('Lead updated successfully');
+  return { success: true, data };
 }
 
 // ============================================
@@ -332,136 +383,231 @@ async function getAvailableSlots(propertyId) {
 // TOOL: Create booking
 // ============================================
 async function createBooking({ leadId, propertyId, slotNumber, slotMap, leadName, leadPhone }) {
-  const { data: tenant } = await supabase
-    .from('tenants')
-    .select('*')
-    .eq('id', TENANT_ID)
-    .single();
+  console.log('=== CREATE BOOKING CALLED ===');
+  console.log('leadId:', leadId);
+  console.log('propertyId:', propertyId);
+  console.log('slotNumber:', slotNumber);
+  console.log('leadName:', leadName);
+  console.log('leadPhone:', leadPhone);
+  console.log('slotMap type:', typeof slotMap);
+  console.log('slotMap preview:', JSON.stringify(slotMap).substring(0, 100));
 
-  const calendarId = process.env.SYDIA_CALENDAR_ID || tenant.google_calendar_id;
-  const timezone = tenant.timezone || 'Africa/Nairobi';
-  const companyName = tenant.company_name;
+  if (!leadId) return { success: false, error: 'Missing leadId' };
+  if (!propertyId) return { success: false, error: 'Missing propertyId' };
+  if (!slotNumber) return { success: false, error: 'Missing slotNumber' };
+  if (!slotMap) return { success: false, error: 'Missing slotMap' };
 
-  const slots = typeof slotMap === 'string' ? JSON.parse(slotMap) : slotMap;
-  const slotData = slots[slotNumber.toString()];
-  if (!slotData) return { success: false, error: 'Invalid slot' };
-
-  const [startTime, endTime] = slotData.split('|');
-  const slotStart = new Date(startTime);
-  const slotEnd = new Date(endTime);
-
-  // Check conflict
-  const { data: conflicts } = await supabase
-    .from('bookings')
-    .select('id')
-    .eq('tenant_id', TENANT_ID)
-    .neq('status', 'Cancelled')
-    .lt('start_datetime', slotEnd.toISOString())
-    .gt('end_datetime', slotStart.toISOString())
-    .limit(1);
-
-  if (conflicts && conflicts.length > 0) {
-    return { success: false, slotTaken: true };
-  }
-
-  const { data: property } = await supabase
-    .from('properties')
-    .select('property_name, address, price')
-    .eq('id', propertyId)
-    .single();
-
-  const { data: agent } = await supabase
-    .from('agents')
-    .select('agent_name, phone')
-    .eq('tenant_id', TENANT_ID)
-    .eq('active', true)
-    .single();
-
-  const agentName = agent?.agent_name || null;
-  const agentPhone = agent?.phone || null;
-
-  // Create calendar event
-  const event = {
-    summary: `${companyName} - Property Viewing`,
-    description:
-      `Property: ${property.property_name}\n` +
-      `Client: ${leadName}\n` +
-      `Phone: ${leadPhone}\n` +
-      `Agent: ${agentName || 'N/A'}`,
-    location: property.address,
-    start: { dateTime: slotStart.toISOString(), timeZone: timezone },
-    end: { dateTime: slotEnd.toISOString(), timeZone: timezone },
-    reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: 60 }] }
-  };
-
-  let calendarEvent;
   try {
-    calendarEvent = await calendar.events.insert({ calendarId, resource: event });
-  } catch (err) {
-    console.error('Calendar error:', err.message);
-    return { success: false, error: 'Calendar error' };
-  }
+    const { data: tenant, error: tenantError } = await supabase
+      .from('tenants')
+      .select('*')
+      .eq('id', TENANT_ID)
+      .single();
 
-  const { data: booking } = await supabase
-    .from('bookings')
-    .insert({
-      lead_id: leadId,
-      property_id: propertyId,
-      tenant_id: TENANT_ID,
-      start_datetime: slotStart.toISOString(),
-      end_datetime: slotEnd.toISOString(),
-      date: slotStart.toISOString().split('T')[0],
-      time: slotStart.toLocaleTimeString('en-KE', { timeZone: timezone, hour: 'numeric', minute: '2-digit', hour12: true }),
-      status: 'Scheduled',
-      google_event_id: calendarEvent.data.id,
-      agent_name: agentName,
-      agent_phone: agentPhone
-    })
-    .select()
-    .single();
-
-  const bookingDate = slotStart.toLocaleDateString('en-KE', { timeZone: timezone });
-  const bookingTime = slotStart.toLocaleTimeString('en-KE', { timeZone: timezone, hour: 'numeric', minute: '2-digit', hour12: true });
-
-  // Notify agent via Twilio template
-  if (agentPhone) {
-    try {
-      const agentWhatsApp = agentPhone.startsWith('whatsapp:')
-        ? agentPhone
-        : `whatsapp:${agentPhone}`;
-
-      await twilioClient.messages.create({
-        from: SYDIA_WHATSAPP,
-        to: agentWhatsApp,
-        contentSid: TEMPLATES.BOOKING_CONFIRMED,
-        contentVariables: JSON.stringify({
-          "1": leadName || 'Unknown',
-          "2": leadPhone || 'N/A',
-          "3": property.property_name,
-          "4": `KES ${Number(property.price).toLocaleString()}`,
-          "5": leadPhone || 'N/A',
-          "6": 'Kilimani',
-          "7": bookingDate,
-          "8": bookingTime
-        })
-      });
-      console.log('Agent notified:', agentPhone);
-    } catch (err) {
-      console.error('Agent notification error:', err.message);
+    if (tenantError) {
+      console.error('Tenant fetch error:', tenantError);
+      return { success: false, error: 'Could not fetch tenant config' };
     }
-  }
 
-  return {
-    success: true,
-    bookingId: booking.id,
-    property: property.property_name,
-    address: property.address,
-    price: `KES ${Number(property.price).toLocaleString()}`,
-    date: bookingDate,
-    time: bookingTime,
-    agentName,
-    agentPhone
-  };
+    const calendarId = process.env.SYDIA_CALENDAR_ID || tenant.google_calendar_id;
+    const timezone = tenant.timezone || 'Africa/Nairobi';
+    const companyName = tenant.company_name;
+
+    // Parse slot map
+    let slots;
+    try {
+      slots = typeof slotMap === 'string' ? JSON.parse(slotMap) : slotMap;
+    } catch (e) {
+      console.error('Failed to parse slotMap:', e.message);
+      return { success: false, error: 'Invalid slot map format' };
+    }
+
+    const slotKey = slotNumber.toString();
+    const slotData = slots[slotKey];
+    console.log('Looking up slot key:', slotKey);
+    console.log('Available keys:', Object.keys(slots));
+    console.log('Slot data:', slotData);
+
+    if (!slotData || !slotData.includes('|')) {
+      return {
+        success: false,
+        error: `Invalid slot number ${slotNumber}. Available slots: ${Object.keys(slots).join(', ')}`
+      };
+    }
+
+    const [startTime, endTime] = slotData.split('|');
+    const slotStart = new Date(startTime);
+    const slotEnd = new Date(endTime);
+
+    console.log('Slot start:', slotStart.toISOString());
+    console.log('Slot end:', slotEnd.toISOString());
+
+    // Check for conflicts
+    const { data: conflicts } = await supabase
+      .from('bookings')
+      .select('id')
+      .eq('tenant_id', TENANT_ID)
+      .neq('status', 'Cancelled')
+      .lt('start_datetime', slotEnd.toISOString())
+      .gt('end_datetime', slotStart.toISOString())
+      .limit(1);
+
+    if (conflicts && conflicts.length > 0) {
+      console.log('Slot conflict detected');
+      return { success: false, slotTaken: true, error: 'That slot is already taken' };
+    }
+
+    // Get property details
+    const { data: property, error: propertyError } = await supabase
+      .from('properties')
+      .select('property_name, address, price, agents(agent_name, phone, email)')
+      .eq('id', propertyId)
+      .single();
+
+    if (propertyError || !property) {
+      console.error('Property fetch error:', propertyError);
+      return { success: false, error: 'Could not find property' };
+    }
+
+    console.log('Property found:', property.property_name);
+
+    // Get agent — try from property first, then fall back to active agent
+    let agentName = property.agents?.agent_name || null;
+    let agentPhone = property.agents?.phone || null;
+
+    if (!agentPhone) {
+      const { data: fallbackAgent } = await supabase
+        .from('agents')
+        .select('agent_name, phone')
+        .eq('tenant_id', TENANT_ID)
+        .eq('active', true)
+        .single();
+
+      agentName = fallbackAgent?.agent_name || null;
+      agentPhone = fallbackAgent?.phone || null;
+    }
+
+    console.log('Agent:', agentName, agentPhone);
+
+    // Create Google Calendar event
+    const bookingDate = slotStart.toLocaleDateString('en-KE', { timeZone: timezone });
+    const bookingTime = slotStart.toLocaleTimeString('en-KE', {
+      timeZone: timezone,
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    });
+
+    const event = {
+      summary: `${companyName} - Property Viewing`,
+      description:
+        `Property: ${property.property_name}\n` +
+        `Client: ${leadName || 'Unknown'}\n` +
+        `Phone: ${leadPhone || 'N/A'}\n` +
+        `Agent: ${agentName || 'N/A'}`,
+      location: property.address,
+      start: { dateTime: slotStart.toISOString(), timeZone: timezone },
+      end: { dateTime: slotEnd.toISOString(), timeZone: timezone },
+      reminders: {
+        useDefault: false,
+        overrides: [{ method: 'popup', minutes: 60 }]
+      }
+    };
+
+    let calendarEventId = null;
+    try {
+      const calendarEvent = await calendar.events.insert({
+        calendarId,
+        resource: event
+      });
+      calendarEventId = calendarEvent.data.id;
+      console.log('Calendar event created:', calendarEventId);
+    } catch (calErr) {
+      console.error('Calendar error (non-fatal):', calErr.message);
+      // Continue even if calendar fails — booking in DB is more important
+    }
+
+    // Create booking in Supabase
+    const { data: booking, error: bookingError } = await supabase
+      .from('bookings')
+      .insert({
+        lead_id: leadId,
+        property_id: propertyId,
+        tenant_id: TENANT_ID,
+        start_datetime: slotStart.toISOString(),
+        end_datetime: slotEnd.toISOString(),
+        date: slotStart.toISOString().split('T')[0],
+        time: bookingTime,
+        status: 'Scheduled',
+        google_event_id: calendarEventId,
+        agent_name: agentName,
+        agent_phone: agentPhone
+      })
+      .select()
+      .single();
+
+    if (bookingError) {
+      console.error('Supabase booking error:', JSON.stringify(bookingError));
+      return { success: false, error: `Database error: ${bookingError.message}` };
+    }
+
+    console.log('Booking created in DB:', booking.id);
+
+    // Update lead status
+    await supabase
+      .from('leads')
+      .update({
+        status: 'Booked',
+        conversation_stage: 'booking_confirmed',
+        last_viewed_property: property.property_name
+      })
+      .eq('id', leadId);
+
+    // Notify agent via WhatsApp template
+    if (agentPhone) {
+      try {
+        const agentWhatsApp = agentPhone.startsWith('whatsapp:')
+          ? agentPhone
+          : `whatsapp:${agentPhone}`;
+
+        await twilioClient.messages.create({
+          from: SYDIA_WHATSAPP,
+          to: agentWhatsApp,
+          contentSid: TEMPLATES.BOOKING_CONFIRMED,
+          contentVariables: JSON.stringify({
+            "1": leadName || 'Unknown',
+            "2": leadPhone || 'N/A',
+            "3": property.property_name,
+            "4": `KES ${Number(property.price || 0).toLocaleString()}`,
+            "5": leadPhone || 'N/A',
+            "6": property.address || 'N/A',
+            "7": bookingDate,
+            "8": bookingTime
+          })
+        });
+        console.log('Agent notified at:', agentPhone);
+      } catch (notifyErr) {
+        console.error('Agent notification error:', notifyErr.message);
+      }
+    }
+
+    return {
+      success: true,
+      bookingId: booking.id,
+      property: property.property_name,
+      address: property.address,
+      price: `KES ${Number(property.price).toLocaleString()}`,
+      date: bookingDate,
+      time: bookingTime,
+      agentName,
+      agentPhone
+    };
+
+  } catch (err) {
+    console.error('createBooking unexpected error:', err.message);
+    console.error('Stack:', err.stack);
+    return { success: false, error: err.message };
+  }
 }
 
 // ============================================
