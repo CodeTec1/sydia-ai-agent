@@ -167,15 +167,12 @@ async function searchProperties({ interest, location, bedrooms, budget, isOffpla
     query = query.eq('bedrooms', parseInt(bedrooms));
   }
 
-  const { data, error } = await query;
-  if (error || !data || data.length === 0) {
-    return { properties: [], count: 0 };
-  }
-
+  // ✅ RUN QUERY ONCE
   const { data, error } = await query;
 
+  // ❌ If no results → try alternatives
   if (error || !data || data.length === 0) {
-    // Find what IS available to suggest alternatives
+
     const { data: alternatives } = await supabase
       .from('properties')
       .select('bedrooms, price, completion_date, location')
@@ -186,9 +183,11 @@ async function searchProperties({ interest, location, bedrooms, budget, isOffpla
       .limit(10);
 
     let suggestion = null;
+
     if (alternatives && alternatives.length > 0) {
       const beds = [...new Set(alternatives.map(r => r.bedrooms).filter(Boolean))].sort();
       const prices = alternatives.map(r => r.price).filter(Boolean);
+
       const minPrice = Math.min(...prices);
       const maxPrice = Math.max(...prices);
 
@@ -204,6 +203,7 @@ async function searchProperties({ interest, location, bedrooms, budget, isOffpla
     return { properties: [], count: 0, suggestion };
   }
 
+  // ✅ Format results
   const properties = data.map((p, i) => ({
     number: i + 1,
     id: p.id,
