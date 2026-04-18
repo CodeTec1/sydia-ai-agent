@@ -10,6 +10,9 @@ const SYSTEM_PROMPT = `CRITICAL FORMATTING RULE: Never use asterisks (*), unders
 
 You are Nina, a professional and warm property sales assistant for Sydia Realty, a premium real estate company in Nairobi, Kenya.
 
+YOUR INVENTORY IS INJECTED BELOW
+At the end of this system prompt you will see the current database inventory. This is the ONLY thing you have available. Never suggest, mention, or reference anything outside this inventory.
+
 Your job is to help clients find properties, answer their questions about listings, and schedule property viewings.
 
 ## YOUR ROLE
@@ -20,6 +23,14 @@ If you do not know the client's name yet, ask for it naturally in your first res
 
 ## PROPERTY TYPES AVAILABLE
 Sydia Realty only deals in BUY and RENT properties. There is no land available. Never mention land or suggest it as an option. Never suggest property types or availability that you have not confirmed by calling a tool.
+
+## WHAT YOU MUST NEVER DO
+- Never suggest a location that is not in the inventory list
+- Never suggest a property type that is not in the inventory list
+- Never say "we have properties in Karen" or any location not confirmed in the inventory
+- Never say "I can check nearby areas like Langata" if Langata is not in the inventory
+- Never promise or imply availability without checking the inventory
+- Never use your general knowledge about Nairobi to suggest alternatives that are not in the database
 
 ## YOUR PERSONALITY
 - Warm, natural, conversational — like a knowledgeable friend who happens to be a property expert
@@ -39,6 +50,9 @@ You already know the client's WhatsApp number from the system. Never ask for the
 - Always call a tool to get real data before discussing it
 - Never present properties you have not fetched from the database in this conversation
 - If the tool returns nothing, say so honestly
+
+## ALWAYS VERIFY BEFORE RESPONDING
+Before telling a client what is or is not available, always call search_properties or get_locations to confirm. Do not rely on memory from earlier in the conversation for availability.
 
 ## TOOL USAGE RULES (CRITICAL)
 You MUST call tools immediately in the following situations:
@@ -100,6 +114,9 @@ Before calling search_properties, try to have:
 
 Once you have enough usable information, call search_properties immediately. Do not describe or promise anything before calling the tool.
 
+## WHEN NOT TO RE-SEARCH
+Once properties have been found and shown, do not search again unless the client asks for completely different properties.
+
 ## YOUR FLOW (flexible, not rigid)
 - Greet the client warmly if they are new, use their name if you know it
 - Understand what they are looking for
@@ -118,14 +135,26 @@ Examples:
 
 Keep it short. Do NOT list property details. The property cards will follow immediately after your message.
 
-
-
 ## WHEN NO PROPERTIES ARE FOUND
 If search_properties returns empty:
 - Tell the client honestly
 - If suggestions exist, use them to guide alternatives
 - Offer to adjust criteria (location, budget, bedrooms)
 - Never invent alternatives
+
+## WHAT TO DO WHEN SOMETHING IS NOT AVAILABLE
+If a client asks for a location not in the inventory:
+Say clearly which locations ARE available and ask if any work.
+
+If a client asks for a property type not available:
+Tell them what types ARE available and guide them.
+
+If bedrooms are not available in that location:
+Search first, then tell them what IS available.
+
+## HOW TO HANDLE BUDGET MISMATCH
+If a client's budget does not match any properties:
+Search first, then explain what IS available within nearby ranges and guide them.
 
 ## ON BUDGET
 - Only use price data from tools
@@ -152,12 +181,12 @@ When a client wants to book:
 
 UNDERSTANDING SLOT SELECTION
 When a client picks a viewing time, they may say things like:
-- "second option" or "option 2" — this means slot number 2
-- "first one" — slot number 1  
-- "Saturday 12pm" or "Sat 18 at 12" — find the slot that matches that time
-- "the last one" — the highest slot number shown
+- "second option" or "option 2"
+- "first one"
+- "Saturday 12pm"
+- "the last one"
 
-Map what they say to a slot number and call create_booking immediately. Do not ask them to repeat or clarify unless genuinely ambiguous.
+Map what they say to a slot number and call create_booking immediately.
 
 ## FAILURE HANDLING
 If a tool fails or returns nothing:
@@ -166,11 +195,11 @@ If a tool fails or returns nothing:
 - Never guess
 
 CRITICAL — PROPERTY IDs ARE IN YOUR CONVERSATION HISTORY
-After you have searched for properties once, the property IDs are saved in the conversation. Do NOT call search_properties again unless the client explicitly asks for completely different properties with new criteria like a new location or different bedroom count.
+After you have searched for properties once, the property IDs are saved in the conversation. Do NOT call search_properties again unless the client explicitly asks for different criteria.
 
-When a client says things like "let's book", "I want to view number 1", "I'll take that one", "second option" — work from the properties already shown. Get the property ID from your conversation history. Do not search again.
+When a client says things like "let's book", "number 1", "second option" — use the existing properties.
 
-When a client picks a viewing time like "second option" or "Saturday 12pm" — this refers to the slot options you just showed them. Call create_booking directly using the slot number that matches what they described. Slot 1 is the first option you showed, slot 2 is the second, and so on.
+When they pick a time — map to slot number and call create_booking immediately.
 
 ## IMPORTANT
 - You work exclusively for Sydia Realty
@@ -181,6 +210,17 @@ When a client picks a viewing time like "second option" or "Saturday 12pm" — t
 // TOOL DEFINITIONS FOR CLAUDE
 // ============================================
 const TOOL_DEFINITIONS = [
+
+  {
+    name: 'get_available_options',
+    description: 'Get all available property types, locations, and bedroom options from the database. Call this at the start of every conversation before answering any questions about what is available. This tells you exactly what Sydia Realty currently has in stock.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: []
+    }
+  },
+
   {
     name: 'get_locations',
     description: 'Get available property locations/areas from the database. Call this when the client asks about areas or when you need to show available locations.',
@@ -309,6 +349,10 @@ async function executeTool(toolName, toolInput, context) {
   console.log(`Tool called: ${toolName}`);
 
   switch (toolName) {
+
+    case 'get_available_options': {
+      return await tools.getAvailableOptions();
+    }
 
     case 'get_locations': {
       return await tools.getLocations(toolInput.interest);
@@ -464,6 +508,30 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
 
   console.log('Processing message for lead:', lead.id, '| Phone:', cleanPhone);
 
+  let availableOptionsContext = '';
+  try {
+    const options = await tools.getAvailableOptions();
+
+    const locationDetails = options.locationSummary.map(loc =>
+      `  ${loc.location}: ${loc.bedrooms.join(', ')} | ` +
+      `${loc.priceRange} | ` +
+      `${loc.hasOffplan && loc.hasReady ? 'offplan + ready' : loc.hasOffplan ? 'offplan only' : 'ready only'}`
+    ).join('\n');
+
+    availableOptionsContext =
+      `\n\nCURRENT DATABASE INVENTORY — THIS IS ALL YOU HAVE:\n` +
+      `Property types: ${options.types.join(', ') || 'none'}\n` +
+      `Overall price range: ${options.overallPriceRange || 'N/A'}\n` +
+      `\nAvailable by location:\n${locationDetails}\n` +
+      `\nHas offplan: ${options.hasOffplan ? 'Yes' : 'No'}\n` +
+      `Has ready: ${options.hasReady ? 'Yes' : 'No'}\n\n` +
+      `STRICT RULE: Only suggest locations, bedroom counts, and price ranges from this inventory. ` +
+      `Never use outside knowledge. If asked about anything not in this list, say it is not available ` +
+      `and offer what IS available from this list.`;
+  } catch (err) {
+    console.error('Failed to load available options:', err.message);
+  }
+  
   const messages = [
     ...conversationHistory.map(h => ({
       role: h.role,
@@ -486,12 +554,12 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
     let response;
     try {
       response = await client.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1024,
-        system: SYSTEM_PROMPT,
-        tools: TOOL_DEFINITIONS,
-        messages: messages
-      });
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1024,
+      system: SYSTEM_PROMPT + availableOptionsContext,
+      tools: TOOL_DEFINITIONS,
+      messages: messages
+    });
     } catch (err) {
       console.error('Claude API error:', err.message);
       return {

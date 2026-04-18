@@ -121,6 +121,75 @@ async function updateLead(leadId, fields) {
 }
 
 // ============================================
+// TOOL: Get available options
+// ============================================
+
+async function getAvailableOptions() {
+  const { data } = await supabase
+    .from('properties')
+    .select('type, location, bedrooms, is_offplan, price')
+    .eq('tenant_id', TENANT_ID)
+    .eq('available', true);
+
+  if (!data || data.length === 0) {
+    return {
+      types: [],
+      locations: [],
+      bedrooms: [],
+      hasOffplan: false,
+      hasReady: false,
+      priceRange: null,
+      locationSummary: []
+    };
+  }
+
+  const types = [...new Set(data.map(r => r.type).filter(Boolean))].sort();
+  const locations = [...new Set(data.map(r => r.location).filter(Boolean))].sort();
+  const bedrooms = [...new Set(
+    data.map(r => parseInt(r.bedrooms)).filter(n => !isNaN(n))
+  )].sort((a, b) => a - b);
+  const hasOffplan = data.some(r => r.is_offplan === true);
+  const hasReady = data.some(r => r.is_offplan === false);
+
+  const prices = data.map(r => r.price).filter(p => p > 0);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+
+  // Build per-location summary so Nina knows exactly what exists where
+  const locationSummary = locations.map(loc => {
+    const locProps = data.filter(r => r.location === loc);
+    const locBeds = [...new Set(
+      locProps.map(r => parseInt(r.bedrooms)).filter(n => !isNaN(n))
+    )].sort((a, b) => a - b);
+    const locPrices = locProps.map(r => r.price).filter(p => p > 0);
+    const locMin = Math.min(...locPrices);
+    const locMax = Math.max(...locPrices);
+    const locTypes = [...new Set(locProps.map(r => r.type).filter(Boolean))];
+    const locOffplan = locProps.some(r => r.is_offplan === true);
+    const locReady = locProps.some(r => r.is_offplan === false);
+
+    return {
+      location: loc,
+      types: locTypes,
+      bedrooms: locBeds.map(b => b === 0 ? 'Studio' : `${b} bed`),
+      priceRange: `KES ${Number(locMin).toLocaleString()} to KES ${Number(locMax).toLocaleString()}`,
+      hasOffplan: locOffplan,
+      hasReady: locReady
+    };
+  });
+
+  return {
+    types,
+    locations,
+    bedrooms,
+    hasOffplan,
+    hasReady,
+    overallPriceRange: `KES ${Number(minPrice).toLocaleString()} to KES ${Number(maxPrice).toLocaleString()}`,
+    locationSummary
+  };
+}
+
+// ============================================
 // TOOL: Get available locations
 // ============================================
 async function getLocations(interest) {
@@ -649,6 +718,7 @@ async function saveMessage(leadId, role, content) {
 module.exports = {
   getOrCreateLead,
   updateLead,
+  getAvailableOptions, 
   getLocations,
   getBedroomOptions,
   getCompletionDates,
