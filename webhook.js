@@ -73,7 +73,10 @@ router.post('/', async (req, res) => {
     await sendMessage(from, aiResponse);
 
     // If properties were found, send property cards with photos
+   // If properties were found, send property cards THEN summary
     if (properties && properties.length > 0) {
+
+      // Wait for AI text message to be delivered first
       await delay(2000);
 
       for (let i = 0; i < properties.length; i++) {
@@ -87,7 +90,6 @@ router.post('/', async (req, res) => {
         const sqmText = p.sqm ? ` (${p.sqm}sqm)` : '';
 
         const propertyMsg =
-          `Property ${i + 1} of ${properties.length}\n\n` +
           (p.project ? `${p.project}\n` : '') +
           `${p.name}\n\n` +
           `Location: ${p.location}\n` +
@@ -97,7 +99,6 @@ router.post('/', async (req, res) => {
           `Address: ${p.address}` +
           (p.description ? `\n\n${p.description}` : '');
 
-        // Try to send with photo, fall back to text only
         if (p.photo && p.photo.startsWith('http') && !p.photo.includes('photos.app.goo.gl')) {
           await sendMessage(from, propertyMsg, p.photo);
         } else {
@@ -107,14 +108,21 @@ router.post('/', async (req, res) => {
         if (i < properties.length - 1) await delay(3000);
       }
 
-      // Wait then send summary
-      await delay(properties.length * 1500);
-      await sendMessage(
-        from,
-        `I have sent you ${properties.length} propert${properties.length === 1 ? 'y' : 'ies'}.\n\nJust let me know which one you would like to visit and I will get a viewing sorted for you.`
-      );
-    }
+      // Summary comes AFTER all property cards — wait long enough
+      await delay(properties.length * 2000 + 1000);
 
+      if (properties.length === 1) {
+        await sendMessage(
+          from,
+          'That is the property above. Just let me know if you would like to book a viewing and I will get it sorted for you.'
+        );
+      } else {
+        await sendMessage(
+          from,
+          `Those are the ${properties.length} properties above. Just let me know which one you would like to visit and I will book a viewing for you.`
+        );
+      }
+    }
   } catch (err) {
     console.error('Webhook error:', err);
     console.error('Stack:', err.stack);
