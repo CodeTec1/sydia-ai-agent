@@ -706,6 +706,96 @@ async function getConversationHistory(leadId) {
   return data || [];
 }
 
+async function cancelBooking(leadId) {
+  console.log('Cancelling booking for lead:', leadId);
+
+  // Find the most recent active booking
+  const { data: bookings, error } = await supabase
+    .from('bookings')
+    .select('id, google_event_id, start_datetime, property_id, agent_phone, agent_name, properties(property_name, address)')
+    .eq('lead_id', leadId)
+    .eq('status', 'Scheduled')
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (error || !bookings || bookings.length === 0) {
+    return { success: false, error: 'No active booking found to cancel' };
+  }
+
+  const booking = bookings[0];
+
+  // Delete from Google Calendar
+  if (booking.google_event_id) {
+    try {
+      const { data: tenant } = await supabase
+        .from('tenants')
+        .select('google_calendar_id')
+        .eq('id', TENANT_ID)
+        .single();
+
+      await calendar.events.delete({
+        calendarId: process.env.SYDIA_CALENDAR_ID || tenant.google_calendar_id,
+        eventId: booking.google_event_id
+      });
+      console.log('Calendar event deleted');
+    } catch (calErr) {
+      console.error('Calendar deletion error (non-fatal):', calErr.message);
+    }
+  }
+
+  // Update booking status
+  await supabase
+    .from('bookings')
+    .update({ status: 'Cancelled' })
+    .eq('id', booking.id);
+
+  // Update lead
+  await supabase
+    .from('leads')
+    .update({ status: 'Cancelled', conversation_stage: 'booking_cancelled' })
+    .eq('id', leadId);
+
+  // Notify agent
+  if (booking.agent_phone) {
+    try {
+      const { data: lead } = await supabase
+        .from('leads')
+        .select('name')
+        .eq('id', leadId)
+        .single();
+
+      const agentWhatsApp = booking.agent_phone.startsWith('whatsapp:')
+        ? booking.agent_phone
+        : `whatsapp:${booking.agent_phone}`;
+
+      await twilioClient.messages.create({
+        from: SYDIA_WHATSAPP,
+        to: agentWhatsApp,
+        contentSid: TEMPLATES.BOOKING_CANCELLED,
+        contentVariables: JSON.stringify({
+          "1": lead?.name || 'Client',
+          "2": 'N/A'
+        })
+      });
+      console.log('Agent notified of cancellation');
+    } catch (notifyErr) {
+      console.error('Agent cancellation notification error:', notifyErr.message);
+    }
+  }
+
+  return {
+    success: true,
+    property: booking.properties?.property_name || 'your property',
+    date: new Date(booking.start_datetime).toLocaleDateString('en-KE', { timeZone: 'Africa/Nairobi' }),
+    time: new Date(booking.start_datetime).toLocaleTimeString('en-KE', {
+      timeZone: 'Africa/Nairobi',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    })
+  };
+}
+
 // ============================================
 // TOOL: Save message to history
 // ============================================
@@ -725,6 +815,7 @@ module.exports = {
   searchProperties,
   getAvailableSlots,
   createBooking,
+  cancelBooking,
   getConversationHistory,
   saveMessage
 };

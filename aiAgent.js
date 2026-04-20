@@ -201,6 +201,18 @@ When a client says things like "let's book", "number 1", "second option" — use
 
 When they pick a time — map to slot number and call create_booking immediately.
 
+CANCELLATIONS
+If a client says they want to cancel a booking, call cancel_booking immediately. After it succeeds, confirm warmly and let them know the agent has been notified.
+
+AFTER-VIEWING CONVERSATIONS
+Sometimes clients will message after a viewing. They may say things like:
+- "it was amazing, we want to proceed" — mark as Hot Lead, tell them the agent will be in touch
+- "we made an offer" — congratulate them warmly, mark as Hot Lead
+- "not really what we were looking for" — empathize, ask what did not work, offer to find alternatives
+- "still thinking" — offer to answer questions, share more details, be helpful
+
+Handle these naturally. Do not ask them numbered questions about interest level. Just have a real conversation.
+
 ## IMPORTANT
 - You work exclusively for Sydia Realty
 - All data must come from tools
@@ -313,6 +325,16 @@ const TOOL_DEFINITIONS = [
         }
       },
       required: ['propertyId', 'slotNumber']
+    }
+  },
+
+  {
+    name: 'cancel_booking',
+    description: 'Cancel the client\'s most recent active viewing booking. Call this when the client says they want to cancel. It removes the calendar event and notifies the agent.',
+    input_schema: {
+      type: 'object',
+      properties: {},
+      required: []
     }
   },
 
@@ -456,6 +478,11 @@ async function executeTool(toolName, toolInput, context) {
       return result;
     }
 
+    case 'cancel_booking': {
+      const result = await tools.cancelBooking(context.leadId);
+      return result;
+    }
+
     case 'update_lead': {
       // Always use context.leadId — Claude should never provide the leadId
       const id = context.leadId;
@@ -508,28 +535,31 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
 
   console.log('Processing message for lead:', lead.id, '| Phone:', cleanPhone);
 
-  let availableOptionsContext = '';
+ let availableOptionsContext = '';
   try {
     const options = await tools.getAvailableOptions();
 
-    const locationDetails = options.locationSummary.map(loc =>
-      `  ${loc.location}: ${loc.bedrooms.join(', ')} | ` +
-      `${loc.priceRange} | ` +
-      `${loc.hasOffplan && loc.hasReady ? 'offplan + ready' : loc.hasOffplan ? 'offplan only' : 'ready only'}`
-    ).join('\n');
+    if (options && options.locationSummary && options.locationSummary.length > 0) {
+      const locationDetails = options.locationSummary.map(loc =>
+        `  ${loc.location}: ${loc.bedrooms.join(', ')} | ` +
+        `${loc.priceRange} | ` +
+        `${loc.hasOffplan && loc.hasReady ? 'offplan + ready' : loc.hasOffplan ? 'offplan only' : 'ready only'}`
+      ).join('\n');
 
-    availableOptionsContext =
-      `\n\nCURRENT DATABASE INVENTORY — THIS IS ALL YOU HAVE:\n` +
-      `Property types: ${options.types.join(', ') || 'none'}\n` +
-      `Overall price range: ${options.overallPriceRange || 'N/A'}\n` +
-      `\nAvailable by location:\n${locationDetails}\n` +
-      `\nHas offplan: ${options.hasOffplan ? 'Yes' : 'No'}\n` +
-      `Has ready: ${options.hasReady ? 'Yes' : 'No'}\n\n` +
-      `STRICT RULE: Only suggest locations, bedroom counts, and price ranges from this inventory. ` +
-      `Never use outside knowledge. If asked about anything not in this list, say it is not available ` +
-      `and offer what IS available from this list.`;
+      availableOptionsContext =
+        `\n\nCURRENT DATABASE INVENTORY — THIS IS ALL YOU HAVE:\n` +
+        `Property types: ${options.types.join(', ') || 'none'}\n` +
+        `Overall price range: ${options.overallPriceRange || 'N/A'}\n` +
+        `\nAvailable by location:\n${locationDetails}\n` +
+        `\nHas offplan: ${options.hasOffplan ? 'Yes' : 'No'}\n` +
+        `Has ready: ${options.hasReady ? 'Yes' : 'No'}\n\n` +
+        `STRICT RULE: Only suggest locations, bedroom counts, and price ranges from this inventory. ` +
+        `Never use outside knowledge. If asked about anything not in this list, say it is not available ` +
+        `and offer what IS available from this list.`;
+    }
   } catch (err) {
     console.error('Failed to load available options:', err.message);
+    // Continue without inventory — do not crash the conversation
   }
   
   const messages = [

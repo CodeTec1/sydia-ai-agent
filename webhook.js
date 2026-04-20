@@ -40,53 +40,49 @@ router.post('/', async (req, res) => {
   res.status(200).send('<Response></Response>');
 
   try {
-    // Get or create lead
     const lead = await tools.getOrCreateLead(from);
     if (!lead) {
-      await sendMessage(from, 'Sorry, something went wrong. Please try again.');
+      await sendMessage(from, 'Welcome to Sydia Realty! Please try sending your message again.');
       return;
     }
 
     console.log('Lead ID:', lead.id, '| Name:', lead.name || 'Unknown');
 
-    // Load conversation history
     const history = await tools.getConversationHistory(lead.id);
     console.log('History length:', history.length);
 
-    // Save user message to history
     await tools.saveMessage(lead.id, 'user', userMessage);
 
-    // Process through AI
-    const { text: aiResponse, properties } = await processMessage({
-      userMessage,
-      lead,
-      conversationHistory: history
-    });
+    let aiResponse, properties;
 
-    console.log('AI response length:', aiResponse.length);
+    try {
+      const result = await processMessage({
+        userMessage,
+        lead,
+        conversationHistory: history
+      });
+      aiResponse = result.text;
+      properties = result.properties;
+    } catch (aiErr) {
+      console.error('AI processing error:', aiErr.message);
+      console.error('Stack:', aiErr.stack);
+      // Send a graceful response instead of "something went wrong"
+      aiResponse = `Hi there! I am Nina from Sydia Realty. I am here to help you find your perfect property in Nairobi. What are you looking for today?`;
+      properties = null;
+    }
+
+    console.log('AI response length:', aiResponse?.length || 0);
     console.log('Properties found:', properties?.length || 0);
 
-    // Save AI response to history
     await tools.saveMessage(lead.id, 'assistant', aiResponse);
-
-    // Send AI text response
     await sendMessage(from, aiResponse);
 
-    // If properties were found, send property cards with photos
-   // If properties were found, send property cards THEN summary
     if (properties && properties.length > 0) {
-
-      // Wait for AI text message to be delivered first
       await delay(2000);
 
       for (let i = 0; i < properties.length; i++) {
         const p = properties[i];
-
-        const sizeText = p.bedrooms === 0
-          ? 'Studio'
-          : p.bedrooms
-            ? `${p.bedrooms} Bed`
-            : '';
+        const sizeText = p.bedrooms === 0 ? 'Studio' : p.bedrooms ? `${p.bedrooms} Bed` : '';
         const sqmText = p.sqm ? ` (${p.sqm}sqm)` : '';
 
         const propertyMsg =
@@ -108,25 +104,23 @@ router.post('/', async (req, res) => {
         if (i < properties.length - 1) await delay(3000);
       }
 
-      // Summary comes AFTER all property cards — wait long enough
       await delay(properties.length * 2000 + 1000);
 
       if (properties.length === 1) {
-        await sendMessage(
-          from,
-          'That is the property above. Just let me know if you would like to book a viewing and I will get it sorted for you.'
-        );
+        await sendMessage(from, 'That is the property above. Just let me know if you would like to book a viewing and I will get it sorted for you.');
       } else {
-        await sendMessage(
-          from,
-          `Those are the ${properties.length} properties above. Just let me know which one you would like to visit and I will book a viewing for you.`
-        );
+        await sendMessage(from, `Those are the ${properties.length} properties above. Just let me know which one you would like to visit and I will book a viewing for you.`);
       }
     }
+
   } catch (err) {
-    console.error('Webhook error:', err);
+    console.error('Webhook error:', err.message);
     console.error('Stack:', err.stack);
-    await sendMessage(from, 'Sorry, something went wrong. Please try again in a moment.');
+    try {
+      await sendMessage(from, 'Hi! I am Nina from Sydia Realty. Please send your message again and I will be happy to help you.');
+    } catch (sendErr) {
+      console.error('Could not send error message:', sendErr.message);
+    }
   }
 });
 
