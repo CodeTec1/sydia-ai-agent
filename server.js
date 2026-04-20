@@ -9,6 +9,12 @@ app.get('/', (req, res) => {
   res.json({ status: 'Sydia AI Agent Running', version: '1.0.0' });
 });
 
+app.get('/api/test-notifications', async (req, res) => {
+  const { runNotifications } = require('./notifications');
+  await runNotifications();
+  res.json({ success: true, message: 'Notifications run complete' });
+});
+
 app.use('/webhook', require('./webhook'));
 
 const PORT = process.env.PORT || 3001;
