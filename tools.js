@@ -758,11 +758,16 @@ async function cancelBooking(leadId) {
   // Notify agent
   if (booking.agent_phone) {
     try {
-      const { data: lead } = await supabase
-        .from('leads')
-        .select('name')
-        .eq('id', leadId)
-        .single();
+      const { data: lead, error: leadError } = await supabase
+      .from('leads')
+      .select('name, phone')
+      .eq('id', leadId)
+      .single();
+
+    const leadName = lead?.name || 'Client';
+    const leadPhone = lead?.phone
+      ? lead.phone.replace('whatsapp:', '').trim()
+      : 'N/A';
 
       const agentWhatsApp = booking.agent_phone.startsWith('whatsapp:')
         ? booking.agent_phone
@@ -773,8 +778,8 @@ async function cancelBooking(leadId) {
         to: agentWhatsApp,
         contentSid: TEMPLATES.BOOKING_CANCELLED,
         contentVariables: JSON.stringify({
-          "1": lead?.name || 'Client',
-          "2": 'N/A'
+          "1": leadName,
+          "2": leadPhone
         })
       });
       console.log('Agent notified of cancellation');

@@ -86,6 +86,7 @@ router.post('/', async (req, res) => {
         const sqmText = p.sqm ? ` (${p.sqm}sqm)` : '';
 
         const propertyMsg =
+          `Property ${i + 1} of ${properties.length}\n\n` +
           (p.project ? `${p.project}\n` : '') +
           `${p.name}\n\n` +
           `Location: ${p.location}\n` +
