@@ -424,18 +424,6 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
     console.error('Failed to load available options:', err.message);
     // Continue without inventory — do not crash the conversation
   }
-
-  const context = {
-    leadId: lead.id,
-    leadName: lead.name || null,
-    leadPhone: cleanPhone,
-    currentSlotMap: lead.available_slots || null,
-    currentPropertyId: null,
-    lastProperties: null,
-    lastBooking: null,
-    propertiesAlreadySent: hasExistingSearchResults,
-    bookedPropertyIds: new Set()  // Track what has been booked this session
-  };
   
   const messages = [
     ...conversationHistory.map(h => ({
