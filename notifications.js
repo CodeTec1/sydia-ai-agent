@@ -200,6 +200,33 @@ async function send1HourReminders() {
   }
 }
 
+async function markCompletedBookings() {
+  const now = new Date();
+
+  const { data: pastBookings, error } = await supabase
+    .from('bookings')
+    .select('id')
+    .eq('tenant_id', TENANT_ID)
+    .eq('status', 'Scheduled')
+    .lt('end_datetime', now.toISOString());
+
+  if (error) {
+    console.error('markCompleted error:', error.message);
+    return;
+  }
+
+  if (!pastBookings || pastBookings.length === 0) return;
+
+  const ids = pastBookings.map(b => b.id);
+
+  await supabase
+    .from('bookings')
+    .update({ status: 'Completed' })
+    .in('id', ids);
+
+  console.log(`Marked ${ids.length} bookings as Completed`);
+}
+
 // ============================================
 // SMART FOLLOWUP
 // Only sends if lead status is still Booked
@@ -222,7 +249,7 @@ async function sendFollowups() {
       properties(property_name)
     `)
     .eq('tenant_id', TENANT_ID)
-    .eq('status', 'Scheduled')
+    .in('status', ['Scheduled', 'Completed'])
     .eq('followup_sent', false)
     .gt('end_datetime', fourHoursAgo.toISOString())
     .lt('end_datetime', twoHoursAgo.toISOString());
@@ -280,6 +307,8 @@ async function sendFollowups() {
   }
 }
 
+
+
 // ============================================
 // RUN ALL NOTIFICATIONS
 // ============================================
@@ -289,6 +318,7 @@ async function runNotifications() {
   try { await send12HourReminders(); } catch (e) { console.error('12h error:', e.message); }
   try { await send1HourReminders(); } catch (e) { console.error('1h error:', e.message); }
   try { await sendFollowups(); } catch (e) { console.error('followup error:', e.message); }
+  try { await markCompletedBookings(); } catch (e) { console.error('markCompleted error:', e.message); }
 
   console.log('Notifications complete');
 }

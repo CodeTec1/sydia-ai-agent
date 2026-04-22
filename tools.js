@@ -103,8 +103,7 @@ async function updateLead(leadId, fields) {
   }
 
   console.log('Mapped update fields:', JSON.stringify(mapped));
-
-  const { data, error } = await supabase
+const { data, error } = await supabase
     .from('leads')
     .update(mapped)
     .eq('id', leadId)
@@ -114,6 +113,48 @@ async function updateLead(leadId, fields) {
   if (error) {
     console.error('updateLead DB error:', JSON.stringify(error));
     return { success: false, error: error.message };
+  }
+
+  // If status changed to Hot Lead, notify agent immediately
+  if (mapped.status === 'Hot Lead') {
+    try {
+      const { data: lead } = await supabase
+        .from('leads')
+        .select('name, phone, last_viewed_property')
+        .eq('id', leadId)
+        .single();
+
+      const { data: agent } = await supabase
+        .from('agents')
+        .select('phone')
+        .eq('tenant_id', TENANT_ID)
+        .eq('active', true)
+        .single();
+
+      if (agent?.phone) {
+        const agentWhatsApp = agent.phone.startsWith('whatsapp:')
+          ? agent.phone
+          : `whatsapp:${agent.phone}`;
+
+        const cleanLeadPhone = lead?.phone
+          ? lead.phone.replace('whatsapp:', '').trim()
+          : 'N/A';
+
+        await twilioClient.messages.create({
+          from: SYDIA_WHATSAPP,
+          to: agentWhatsApp,
+          contentSid: TEMPLATES.HOT_LEAD,
+          contentVariables: JSON.stringify({
+            "1": lead?.name || 'Unknown',
+            "2": cleanLeadPhone,
+            "3": lead?.last_viewed_property || 'N/A'
+          })
+        });
+        console.log('Hot lead alert sent to agent:', agent.phone);
+      }
+    } catch (notifyErr) {
+      console.error('Hot lead notification error:', notifyErr.message);
+    }
   }
 
   console.log('Lead updated successfully');

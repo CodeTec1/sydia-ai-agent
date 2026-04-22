@@ -151,6 +151,9 @@ When a client wants to book multiple properties:
 5. After a slot is used for one property, it is no longer available for the next property
 6. When a slot conflict occurs, offer the next available slot for that specific property only — do not re-book properties already confirmed
 
+PROPERTY ID RESOLUTION
+You will see a SYSTEM NOTE at the start of some conversations listing the properties already shown with their exact IDs. Always use those IDs directly. Never call search_properties when you already have the property IDs in the system note.
+
 ## WHAT TO DO WHEN SOMETHING IS NOT AVAILABLE
 If a client asks for a location not in the inventory:
 Say clearly which locations ARE available and ask if any work.
@@ -516,11 +519,19 @@ async function executeTool(toolName, toolInput, context) {
     }
 
     case 'create_booking': {
-      const propertyId = toolInput.propertyId || context.currentPropertyId;
+      let propertyId = toolInput.propertyId || context.currentPropertyId;
+
+      // If Claude passed a non-UUID like "property-1-id" or a number, resolve it
+      if (propertyId && (propertyId.includes('property-') || /^\d+$/.test(propertyId))) {
+        const num = parseInt(propertyId.replace(/\D/g, ''));
+        if (context.propertyIdMap && context.propertyIdMap[num]) {
+          console.log(`Resolved property reference "${propertyId}" to UUID: ${context.propertyIdMap[num]}`);
+          propertyId = context.propertyIdMap[num];
+        }
+      }
 
       // Prevent double booking same property
       if (context.bookedPropertyIds.has(propertyId)) {
-        console.log('Prevented duplicate booking for property:', propertyId);
         return {
           success: false,
           error: 'This property has already been booked in this session.',
@@ -537,18 +548,23 @@ async function executeTool(toolName, toolInput, context) {
         leadPhone: context.leadPhone
       };
 
-      console.log('Booking input:', JSON.stringify(bookingInput));
-
-      if (!bookingInput.slotMap) {
-        return { success: false, error: 'No slot map available. Please get available slots first.' };
+      if (!bookingInput.propertyId || bookingInput.propertyId.includes('property-')) {
+        return {
+          success: false,
+          error: 'Invalid property ID. Please check the property reference list and use the exact UUID.'
+        };
       }
 
+      if (!bookingInput.slotMap) {
+        return { success: false, error: 'No slot map. Please get available slots first.' };
+      }
+
+      console.log('Booking input:', JSON.stringify(bookingInput));
       const result = await tools.createBooking(bookingInput);
-      console.log('createBooking result:', JSON.stringify(result));
 
       if (result.success) {
         context.lastBooking = result;
-        context.bookedPropertyIds.add(propertyId);  // Mark as booked
+        context.bookedPropertyIds.add(propertyId);
       }
 
       return result;
@@ -622,10 +638,16 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
     ? lead.phone.replace('whatsapp:', '').trim()
     : null;
 
-  // If lead already has search results from this session, mark as already sent
-  const hasExistingSearchResults = lead.search_results &&
-    Array.isArray(lead.search_results) &&
-    lead.search_results.length > 0;
+  // Load existing search results from lead so Claude always has real property IDs
+  const existingSearchResults = lead.search_results || [];
+  const hasExistingSearchResults = existingSearchResults.length > 0;
+
+  // Build a lookup map of property number → real UUID
+  const propertyIdMap = {};
+  existingSearchResults.forEach(p => {
+    propertyIdMap[p.number] = p.id;
+    propertyIdMap[p.name] = p.id; // Also map by name
+  });
 
   const context = {
     leadId: lead.id,
@@ -633,11 +655,16 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
     leadPhone: cleanPhone,
     currentSlotMap: lead.available_slots || null,
     currentPropertyId: null,
-    lastProperties: null,
+    lastProperties: hasExistingSearchResults ? existingSearchResults.map(p => ({
+      ...p,
+      price: `KES ${Number(p.price).toLocaleString()}`,
+      rawPrice: p.price
+    })) : null,
     lastBooking: null,
     propertiesAlreadySent: hasExistingSearchResults,
     bookedPropertyIds: new Set(),
     lastSearchParams: null,
+    propertyIdMap,
     savedLeadData: {
       name: lead.name || null,
       interest: lead.interest || null,
@@ -688,6 +715,24 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
       content: userMessage
     }
   ];
+
+  // If properties were already shown, inject a reminder with real IDs
+  // so Claude never has to re-search to find property IDs
+  if (hasExistingSearchResults && existingSearchResults.length > 0) {
+    const propertyReminder = existingSearchResults.map(p =>
+      `Property ${p.number}: ${p.name} | ID: ${p.id} | Location: ${p.location} | Price: KES ${Number(p.price).toLocaleString()}`
+    ).join('\n');
+
+    // Insert before the last user message
+    messages.splice(messages.length - 1, 0, {
+      role: 'user',
+      content: `[SYSTEM NOTE - Property reference list for this conversation:\n${propertyReminder}\nUse these exact IDs when booking. Do not call search_properties to find IDs that are already here.]`
+    });
+    messages.splice(messages.length - 1, 0, {
+      role: 'assistant',
+      content: 'Understood. I have the property IDs available and will use them directly for bookings.'
+    });
+  }
 
   let finalText = null;
   let iterations = 0;
