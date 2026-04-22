@@ -704,6 +704,20 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
     console.error('Failed to load available options:', err.message);
     // Continue without inventory — do not crash the conversation
   }
+
+  // Add properties already shown to this client into the system context
+  let dynamicContext = availableOptionsContext;
+
+  if (hasExistingSearchResults && existingSearchResults.length > 0) {
+    const propertyList = existingSearchResults.map(p =>
+      `Property ${p.number}: ${p.name} | ID: ${p.id} | Price: KES ${Number(p.price).toLocaleString()} | Location: ${p.location}`
+    ).join('\n');
+
+    dynamicContext +=
+      `\n\nPROPERTIES ALREADY SHOWN TO THIS CLIENT:\n` +
+      `${propertyList}\n\n` +
+      `Use these exact IDs for bookings. Do not call search_properties to find IDs already listed here.`;
+  }
   
   const messages = [
     ...conversationHistory.map(h => ({
@@ -716,23 +730,6 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
     }
   ];
 
-  // If properties were already shown, inject a reminder with real IDs
-  // so Claude never has to re-search to find property IDs
-  if (hasExistingSearchResults && existingSearchResults.length > 0) {
-    const propertyReminder = existingSearchResults.map(p =>
-      `Property ${p.number}: ${p.name} | ID: ${p.id} | Location: ${p.location} | Price: KES ${Number(p.price).toLocaleString()}`
-    ).join('\n');
-
-    // Insert before the last user message
-    messages.splice(messages.length - 1, 0, {
-      role: 'user',
-      content: `[SYSTEM NOTE - Property reference list for this conversation:\n${propertyReminder}\nUse these exact IDs when booking. Do not call search_properties to find IDs that are already here.]`
-    });
-    messages.splice(messages.length - 1, 0, {
-      role: 'assistant',
-      content: 'Understood. I have the property IDs available and will use them directly for bookings.'
-    });
-  }
 
   let finalText = null;
   let iterations = 0;
@@ -747,7 +744,7 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
       response = await client.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: 1024,
-      system: SYSTEM_PROMPT + availableOptionsContext,
+      system: SYSTEM_PROMPT + dynamicContext,
       tools: TOOL_DEFINITIONS,
       messages: messages
     });
