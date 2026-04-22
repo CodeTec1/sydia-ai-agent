@@ -238,6 +238,11 @@ When client asks a question about a property already shown → answer from conve
 
 The goal is maximum one or two tool calls per turn. Every extra tool call costs time and money. Only call a tool if you genuinely need new information that is not already in this conversation.
 
+MULTI-LOCATION SEARCHES
+When a client asks for properties in two or more locations, call search_properties separately for each location one after the other. The results will be combined automatically and sent as one numbered list. After both searches complete, write a short message like "I found properties in both Kilimani and Westlands for you, see the details below." Do not describe individual properties in your text.
+
+When a client later refers to "property 1" or "the first two" they are referring to the combined numbered list that was sent to them.
+
 ## IMPORTANT
 - You work exclusively for Sydia Realty
 - All data must come from tools
@@ -419,21 +424,18 @@ async function executeTool(toolName, toolInput, context) {
     }
 
     case 'search_properties': {
-      // GUARD: If lead already has search results and context has properties,
-      // block unnecessary re-search unless criteria actually changed
-      if (context.lastProperties && context.lastProperties.length > 0) {
-        const existingInterest = context.lastProperties[0]?.location;
+      // Guard against same search being repeated
+      if (context.lastSearchParams) {
         const sameSearch = (
-          toolInput.location?.toLowerCase() === context.lastSearchParams?.location?.toLowerCase() &&
-          toolInput.interest?.toLowerCase() === context.lastSearchParams?.interest?.toLowerCase() &&
-          toolInput.bedrooms === context.lastSearchParams?.bedrooms
+          toolInput.location?.toLowerCase() === context.lastSearchParams.location?.toLowerCase() &&
+          toolInput.interest?.toLowerCase() === context.lastSearchParams.interest?.toLowerCase() &&
+          toolInput.bedrooms === context.lastSearchParams.bedrooms
         );
-
         if (sameSearch) {
-          console.log('BLOCKED: Unnecessary re-search — returning cached results');
+          console.log('BLOCKED: Duplicate search — returning cached results');
           return {
-            properties: context.lastProperties,
-            count: context.lastProperties.length,
+            properties: context.lastProperties || [],
+            count: context.lastProperties?.length || 0,
             cached: true
           };
         }
@@ -442,13 +444,26 @@ async function executeTool(toolName, toolInput, context) {
       const result = await tools.searchProperties(toolInput);
 
       if (result.properties && result.properties.length > 0) {
-        // Only send property cards on first search, not cached returns
-        if (!context.propertiesAlreadySent) {
-          context.lastProperties = result.properties;
-          context.propertiesAlreadySent = true;
+        // Always accumulate — never overwrite
+        if (!context.lastProperties) {
+          context.lastProperties = [];
         }
 
-        // Store search params so we can detect duplicate searches
+        // Only add properties from this location if not already added
+        const existingIds = new Set(context.lastProperties.map(p => p.id));
+        const newProperties = result.properties.filter(p => !existingIds.has(p.id));
+
+        if (newProperties.length > 0) {
+          const startNumber = context.lastProperties.length + 1;
+          const renumbered = newProperties.map((p, i) => ({
+            ...p,
+            number: startNumber + i
+          }));
+          context.lastProperties = [...context.lastProperties, ...renumbered];
+          console.log(`Added ${newProperties.length} properties. Total: ${context.lastProperties.length}`);
+        }
+
+        // Store search params
         context.lastSearchParams = {
           interest: toolInput.interest,
           location: toolInput.location,
@@ -456,8 +471,9 @@ async function executeTool(toolName, toolInput, context) {
           budget: toolInput.budget
         };
 
+        // Save combined search results to lead
         const updateFields = {
-          search_results: result.properties.map((p, i) => ({
+          search_results: context.lastProperties.map((p, i) => ({
             number: i + 1,
             id: p.id,
             name: p.name,
@@ -472,7 +488,6 @@ async function executeTool(toolName, toolInput, context) {
         if (toolInput.bedrooms !== undefined) updateFields.size = `${toolInput.bedrooms} bedroom`;
         if (toolInput.budget) updateFields.budget = toolInput.budget.toString();
         if (toolInput.isOffplan !== undefined) updateFields.is_offplan = toolInput.isOffplan;
-        if (toolInput.completionDate) updateFields.completion_range = toolInput.completionDate;
 
         await tools.updateLead(context.leadId, updateFields);
       }

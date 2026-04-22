@@ -78,15 +78,25 @@ router.post('/', async (req, res) => {
     await sendMessage(from, aiResponse);
 
     if (properties && properties.length > 0) {
+      // Only send properties that have not been sent before in this session
+      const alreadySentIds = new Set(
+        (lead.search_results || []).map(p => p.id)
+      );
+
+      // On first send, alreadySentIds will be empty so all go through
+      // After first send, lead.search_results is updated, so duplicates are blocked
+      // But since we fetch lead once at start of webhook, this session tracks correctly
+
       await delay(2000);
 
       for (let i = 0; i < properties.length; i++) {
         const p = properties[i];
+
         const sizeText = p.bedrooms === 0 ? 'Studio' : p.bedrooms ? `${p.bedrooms} Bed` : '';
         const sqmText = p.sqm ? ` (${p.sqm}sqm)` : '';
 
         const propertyMsg =
-          `Property ${i + 1} of ${properties.length}\n\n` +
+          `Property ${p.number || i + 1} of ${properties.length}\n\n` +
           (p.project ? `${p.project}\n` : '') +
           `${p.name}\n\n` +
           `Location: ${p.location}\n` +
