@@ -458,11 +458,22 @@ async function getAvailableSlots(propertyId) {
     if (!isWorkingDay(day)) continue;
 
     for (let hour = workStart; hour < workEnd && freeSlots.length < 7;) {
-      const slotStart = new Date(day);
-      slotStart.setUTCHours(hour - KENYA_OFFSET, 0, 0, 0);
-      const slotEnd = new Date(slotStart);
-      slotEnd.setMinutes(slotEnd.getMinutes() + slotDuration);
+      // Build slot in Kenya time correctly
+      const slotStartKenya = new Date(day);
+      slotStartKenya.setHours(0, 0, 0, 0);
+      
+      // Set to the working hour in UTC (Kenya = UTC+3, so 9am Kenya = 6am UTC)
+      const utcHour = hour - KENYA_OFFSET;
+      const slotStart = new Date(Date.UTC(
+        slotStartKenya.getFullYear(),
+        slotStartKenya.getMonth(),
+        slotStartKenya.getDate(),
+        utcHour,
+        0, 0, 0
+      ));
 
+      const slotEnd = new Date(slotStart.getTime() + slotDuration * 60 * 1000);
+      
       if (slotStart <= minSlotTime) { hour++; continue; }
       if (overlaps(slotStart, slotEnd)) { hour++; continue; }
 

@@ -427,18 +427,22 @@ async function executeTool(toolName, toolInput, context) {
     }
 
     case 'search_properties': {
-      // Guard against same search being repeated
-      if (context.lastSearchParams) {
-        const sameSearch = (
-          toolInput.location?.toLowerCase() === context.lastSearchParams.location?.toLowerCase() &&
-          toolInput.interest?.toLowerCase() === context.lastSearchParams.interest?.toLowerCase() &&
-          toolInput.bedrooms === context.lastSearchParams.bedrooms
+      // HARD GUARD: If we already have properties in context from DB,
+      // only allow a new search if the location or interest actually changed
+      if (context.lastProperties && context.lastProperties.length > 0) {
+        const newLocation = toolInput.location?.toLowerCase().trim();
+        const existingLocations = new Set(
+          context.lastProperties.map(p => p.location?.toLowerCase().trim())
         );
-        if (sameSearch) {
-          console.log('BLOCKED: Duplicate search — returning cached results');
+
+        // Allow search only if this location has not been searched before
+        if (newLocation && existingLocations.has(newLocation)) {
+          console.log(`BLOCKED: Already have results for ${newLocation} — returning cached`);
           return {
-            properties: context.lastProperties || [],
-            count: context.lastProperties?.length || 0,
+            properties: context.lastProperties.filter(
+              p => p.location?.toLowerCase() === newLocation
+            ),
+            count: context.lastProperties.length,
             cached: true
           };
         }
@@ -446,13 +450,11 @@ async function executeTool(toolName, toolInput, context) {
 
       const result = await tools.searchProperties(toolInput);
 
-      if (result.properties && result.properties.length > 0) {
-        // Always accumulate — never overwrite
+      if (result.properties && result.properties.length > 0 && !result.cached) {
         if (!context.lastProperties) {
           context.lastProperties = [];
         }
 
-        // Only add properties from this location if not already added
         const existingIds = new Set(context.lastProperties.map(p => p.id));
         const newProperties = result.properties.filter(p => !existingIds.has(p.id));
 
@@ -463,36 +465,31 @@ async function executeTool(toolName, toolInput, context) {
             number: startNumber + i
           }));
           context.lastProperties = [...context.lastProperties, ...renumbered];
-          console.log(`Added ${newProperties.length} properties. Total: ${context.lastProperties.length}`);
+          context.propertiesAlreadySent = false; // New properties need to be sent
+          context.newPropertiesFound = true;
+          // Update property ID map
+          renumbered.forEach(p => {
+            context.propertyIdMap[p.number] = p.id;
+          });
+
+          // Save to DB
+          const updateFields = {
+            search_results: context.lastProperties.map((p, i) => ({
+              number: i + 1,
+              id: p.id,
+              name: p.name,
+              price: p.rawPrice || p.price,
+              location: p.location,
+              address: p.address
+            }))
+          };
+          if (toolInput.interest) updateFields.interest = toolInput.interest;
+          if (toolInput.location) updateFields.location = toolInput.location;
+          if (toolInput.bedrooms !== undefined) updateFields.size = `${toolInput.bedrooms} bedroom`;
+          if (toolInput.budget) updateFields.budget = toolInput.budget.toString();
+
+          await tools.updateLead(context.leadId, updateFields);
         }
-
-        // Store search params
-        context.lastSearchParams = {
-          interest: toolInput.interest,
-          location: toolInput.location,
-          bedrooms: toolInput.bedrooms,
-          budget: toolInput.budget
-        };
-
-        // Save combined search results to lead
-        const updateFields = {
-          search_results: context.lastProperties.map((p, i) => ({
-            number: i + 1,
-            id: p.id,
-            name: p.name,
-            price: p.rawPrice,
-            location: p.location,
-            address: p.address
-          }))
-        };
-
-        if (toolInput.interest) updateFields.interest = toolInput.interest;
-        if (toolInput.location) updateFields.location = toolInput.location;
-        if (toolInput.bedrooms !== undefined) updateFields.size = `${toolInput.bedrooms} bedroom`;
-        if (toolInput.budget) updateFields.budget = toolInput.budget.toString();
-        if (toolInput.isOffplan !== undefined) updateFields.is_offplan = toolInput.isOffplan;
-
-        await tools.updateLead(context.leadId, updateFields);
       }
 
       return result;
@@ -638,15 +635,17 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
     ? lead.phone.replace('whatsapp:', '').trim()
     : null;
 
-  // Load existing search results from lead so Claude always has real property IDs
-  const existingSearchResults = lead.search_results || [];
+  // Load search results from DB — this is the source of truth across messages
+  const existingSearchResults = Array.isArray(lead.search_results)
+    ? lead.search_results
+    : (lead.search_results ? JSON.parse(lead.search_results) : []);
+
   const hasExistingSearchResults = existingSearchResults.length > 0;
 
-  // Build a lookup map of property number → real UUID
+  // Build property ID map for fast lookup
   const propertyIdMap = {};
   existingSearchResults.forEach(p => {
     propertyIdMap[p.number] = p.id;
-    propertyIdMap[p.name] = p.id; // Also map by name
   });
 
   const context = {
@@ -655,13 +654,10 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
     leadPhone: cleanPhone,
     currentSlotMap: lead.available_slots || null,
     currentPropertyId: null,
-    lastProperties: hasExistingSearchResults ? existingSearchResults.map(p => ({
-      ...p,
-      price: `KES ${Number(p.price).toLocaleString()}`,
-      rawPrice: p.price
-    })) : null,
+    lastProperties: hasExistingSearchResults ? existingSearchResults : null,
     lastBooking: null,
     propertiesAlreadySent: hasExistingSearchResults,
+    newPropertiesFound: false,
     bookedPropertyIds: new Set(),
     lastSearchParams: null,
     propertyIdMap,
@@ -670,7 +666,7 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
       interest: lead.interest || null,
       location: lead.location || null,
       size: lead.size || null,
-      budget: lead.budget || null,
+      budget: lead.budget?.toString() || null,
       is_offplan: lead.is_offplan ?? null,
       completion_range: lead.completion_range || null
     }
@@ -818,7 +814,7 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
 
   return {
     text: finalText,
-    properties: context.lastProperties || null
+    properties: context.newPropertiesFound ? context.lastProperties : null
   };
 }
 
