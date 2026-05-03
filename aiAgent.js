@@ -246,6 +246,18 @@ When a client asks for properties in two or more locations, call search_properti
 
 When a client later refers to "property 1" or "the first two" they are referring to the combined numbered list that was sent to them.
 
+MEMORY AND RETURNING CLIENTS
+You will always receive a CLIENT PROFILE section with everything known about this person from the database. Use it immediately. If their name is known, use it. If their previous preferences are known, reference them naturally.
+
+When a client returns after a break, you will also receive a PREVIOUS SESSION SUMMARY. Use this to acknowledge what happened before and ask what they need today. Be warm and natural — like a good agent who remembers their clients.
+
+Never ask for information that is already in the CLIENT PROFILE.
+
+SESSION BEHAVIOR
+You are having a real conversation. You remember what was discussed earlier in this session through the conversation history. You remember who this person is through the CLIENT PROFILE. These are your two sources of memory — use both naturally.
+
+When a client changes what they are looking for — different location, different bedroom count, different budget — understand this naturally from the conversation. No need for the client to explicitly say "start a new search". Just respond to what they are saying and search accordingly.
+
 ## IMPORTANT
 - You work exclusively for Sydia Realty
 - All data must come from tools
@@ -427,226 +439,119 @@ async function executeTool(toolName, toolInput, context) {
     }
 
     case 'search_properties': {
-      // HARD GUARD: If we already have properties in context from DB,
-      // only allow a new search if the location or interest actually changed
-      if (context.lastProperties && context.lastProperties.length > 0) {
-        const newLocation = toolInput.location?.toLowerCase().trim();
-        const existingLocations = new Set(
-          context.lastProperties.map(p => p.location?.toLowerCase().trim())
-        );
-
-        // Allow search only if this location has not been searched before
-        if (newLocation && existingLocations.has(newLocation)) {
-          console.log(`BLOCKED: Already have results for ${newLocation} — returning cached`);
-          return {
-            properties: context.lastProperties.filter(
-              p => p.location?.toLowerCase() === newLocation
-            ),
-            count: context.lastProperties.length,
-            cached: true
-          };
-        }
-      }
-
       const result = await tools.searchProperties(toolInput);
 
-      if (result.properties && result.properties.length > 0 && !result.cached) {
-        if (!context.lastProperties) {
-          context.lastProperties = [];
-        }
+      if (result.properties && result.properties.length > 0) {
+        context.newPropertiesThisTurn = result.properties;
 
-        const existingIds = new Set(context.lastProperties.map(p => p.id));
-        const newProperties = result.properties.filter(p => !existingIds.has(p.id));
-
-        if (newProperties.length > 0) {
-          const startNumber = context.lastProperties.length + 1;
-          const renumbered = newProperties.map((p, i) => ({
-            ...p,
-            number: startNumber + i
-          }));
-          context.lastProperties = [...context.lastProperties, ...renumbered];
-          context.propertiesAlreadySent = false; // New properties need to be sent
-          context.newPropertiesFound = true;
-          // Update property ID map
-          renumbered.forEach(p => {
-            context.propertyIdMap[p.number] = p.id;
-          });
-
-          // Save to DB
-          const updateFields = {
-            search_results: context.lastProperties.map((p, i) => ({
-              number: i + 1,
-              id: p.id,
-              name: p.name,
-              price: p.rawPrice || p.price,
-              location: p.location,
-              address: p.address
-            }))
-          };
-          if (toolInput.interest) updateFields.interest = toolInput.interest;
-          if (toolInput.location) updateFields.location = toolInput.location;
-          if (toolInput.bedrooms !== undefined) updateFields.size = `${toolInput.bedrooms} bedroom`;
-          if (toolInput.budget) updateFields.budget = toolInput.budget.toString();
-
-          await tools.updateLead(context.leadId, updateFields);
-        }
+        await tools.updateLead(context.leadId, {
+          search_results: result.properties.map((p, i) => ({
+            number: i + 1,
+            id: p.id,
+            name: p.name,
+            price: p.rawPrice,
+            location: p.location,
+            address: p.address
+          })),
+          interest: toolInput.interest || undefined,
+          location: toolInput.location || undefined,
+          size: toolInput.bedrooms !== undefined ? `${toolInput.bedrooms} bedroom` : undefined,
+          budget: toolInput.budget ? toolInput.budget.toString() : undefined
+        });
       }
 
       return result;
     }
-      
-      
+
     case 'get_available_slots': {
       const result = await tools.getAvailableSlots(toolInput.propertyId);
 
-      if (result.slotMap && context.leadId) {
+      if (result.slotMap) {
         context.currentSlotMap = JSON.stringify(result.slotMap);
+        context.currentPropertyId = toolInput.propertyId;
 
-        // Only save available_slots, NOT selected_property_id
-        // selected_property_id must be a real property UUID from search results
         await tools.updateLead(context.leadId, {
           available_slots: JSON.stringify(result.slotMap)
         });
-
-        // Save property ID to context only — not to DB yet
-        context.currentPropertyId = toolInput.propertyId;
       }
 
       return result;
     }
 
     case 'create_booking': {
-      let propertyId = toolInput.propertyId || context.currentPropertyId;
-
-      // If Claude passed a non-UUID like "property-1-id" or a number, resolve it
-      if (propertyId && (propertyId.includes('property-') || /^\d+$/.test(propertyId))) {
-        const num = parseInt(propertyId.replace(/\D/g, ''));
-        if (context.propertyIdMap && context.propertyIdMap[num]) {
-          console.log(`Resolved property reference "${propertyId}" to UUID: ${context.propertyIdMap[num]}`);
-          propertyId = context.propertyIdMap[num];
-        }
-      }
-
-      // Prevent double booking same property
-      if (context.bookedPropertyIds.has(propertyId)) {
-        return {
-          success: false,
-          error: 'This property has already been booked in this session.',
-          alreadyBooked: true
-        };
-      }
-
       const bookingInput = {
         leadId: context.leadId,
-        propertyId,
+        propertyId: toolInput.propertyId || context.currentPropertyId,
         slotNumber: toolInput.slotNumber,
         slotMap: toolInput.slotMap || context.currentSlotMap,
         leadName: toolInput.leadName || context.leadName || 'Client',
         leadPhone: context.leadPhone
       };
 
-      if (!bookingInput.propertyId || bookingInput.propertyId.includes('property-')) {
-        return {
-          success: false,
-          error: 'Invalid property ID. Please check the property reference list and use the exact UUID.'
-        };
-      }
+      console.log('Booking input:', JSON.stringify(bookingInput));
 
       if (!bookingInput.slotMap) {
-        return { success: false, error: 'No slot map. Please get available slots first.' };
+        return { success: false, error: 'No slot map available. Please get available slots first.' };
       }
 
-      console.log('Booking input:', JSON.stringify(bookingInput));
-      const result = await tools.createBooking(bookingInput);
-
-      if (result.success) {
-        context.lastBooking = result;
-        context.bookedPropertyIds.add(propertyId);
-      }
-
-      return result;
+      return await tools.createBooking(bookingInput);
     }
 
     case 'cancel_booking': {
-      const result = await tools.cancelBooking(context.leadId);
-      return result;
+      return await tools.cancelBooking(context.leadId);
     }
 
     case 'update_lead': {
       const id = context.leadId;
       if (!id) return { success: false, error: 'No lead ID' };
 
-      // Filter to only fields that have actually changed
-      const changedFields = {};
-      const fields = toolInput.fields || {};
+      if (toolInput.fields?.name) context.leadName = toolInput.fields.name;
 
-      const checkFields = ['name', 'interest', 'location', 'size', 'budget', 'is_offplan', 'completion_range', 'status'];
+      const safeFields = { ...toolInput.fields };
+      delete safeFields.leadId;
+      delete safeFields.bedrooms;
 
-      for (const field of checkFields) {
-        if (fields[field] !== undefined) {
-          const incoming = fields[field]?.toString() || null;
-          const existing = context.savedLeadData[field]?.toString() || null;
-          if (incoming !== existing) {
-            changedFields[field] = fields[field];
-          }
-        }
-      }
-
-      // Always allow non-tracked fields like search_results, available_slots, status
-      const alwaysUpdate = ['search_results', 'available_slots', 'selected_property_id',
-                            'last_viewed_property', 'awaiting_followup_response', 'notes'];
-      for (const field of alwaysUpdate) {
-        if (fields[field] !== undefined) {
-          changedFields[field] = fields[field];
-        }
-      }
-
-      if (Object.keys(changedFields).length === 0) {
-        console.log('SKIPPED: update_lead — no new data to save');
-        return { success: true, skipped: true, message: 'No changes detected' };
-      }
-
-      // Update context tracker
-      for (const [key, value] of Object.entries(changedFields)) {
-        if (context.savedLeadData.hasOwnProperty(key)) {
-          context.savedLeadData[key] = value;
-        }
-      }
-
-      if (changedFields.name || fields.name) {
-        context.leadName = changedFields.name || fields.name;
-      }
-
-      console.log('update_lead — saving only changed fields:', JSON.stringify(changedFields));
-      return await tools.updateLead(id, changedFields);
+      return await tools.updateLead(id, safeFields);
     }
 
     default:
-      console.error(`Unknown tool called: ${toolName}`);
+      console.error(`Unknown tool: ${toolName}`);
       return { error: `Unknown tool: ${toolName}` };
   }
+}
+
+function buildClientProfile(lead, sessionSummary) {
+  let profile = '\n\nCLIENT PROFILE (from database):\n';
+
+  if (lead.name) {
+    profile += `Name: ${lead.name}\n`;
+    profile += `This is a returning client. Greet them by name. Do not ask for their name again.\n`;
+  } else {
+    profile += `Name: Unknown — ask for name naturally in your first response.\n`;
+  }
+
+  if (lead.interest) profile += `Previous interest: ${lead.interest}\n`;
+  if (lead.location) profile += `Previous location searched: ${lead.location}\n`;
+  if (lead.budget) profile += `Previous budget: KES ${Number(lead.budget).toLocaleString()}\n`;
+  if (lead.size) profile += `Previous size preference: ${lead.size}\n`;
+  if (lead.status) profile += `Current status: ${lead.status}\n`;
+
+  if (sessionSummary) {
+    profile += `\nPREVIOUS SESSION SUMMARY:\n${sessionSummary}\n`;
+    profile += `\nThis client is returning after a break. Acknowledge the previous interaction naturally. `;
+    profile += `Ask what they need today — they may want something completely different.\n`;
+  }
+
+  profile += `\nNever ask for information already in this profile.\n`;
+
+  return profile;
 }
 
 // ============================================
 // MAIN: Process message through AI
 // ============================================
-async function processMessage({ userMessage, lead, conversationHistory }) {
-  const cleanPhone = lead.phone
-    ? lead.phone.replace('whatsapp:', '').trim()
-    : null;
-
-  // Load search results from DB — this is the source of truth across messages
-  const existingSearchResults = Array.isArray(lead.search_results)
-    ? lead.search_results
-    : (lead.search_results ? JSON.parse(lead.search_results) : []);
-
-  const hasExistingSearchResults = existingSearchResults.length > 0;
-
-  // Build property ID map for fast lookup
-  const propertyIdMap = {};
-  existingSearchResults.forEach(p => {
-    propertyIdMap[p.number] = p.id;
-  });
+async function processMessage({ userMessage, lead, conversationHistory, sessionSummary }) {
+  const cleanPhone = lead.phone?.replace('whatsapp:', '').trim();
 
   const context = {
     leadId: lead.id,
@@ -654,78 +559,40 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
     leadPhone: cleanPhone,
     currentSlotMap: lead.available_slots || null,
     currentPropertyId: null,
-    lastProperties: hasExistingSearchResults ? existingSearchResults : null,
-    lastBooking: null,
-    propertiesAlreadySent: hasExistingSearchResults,
-    newPropertiesFound: false,
-    bookedPropertyIds: new Set(),
-    lastSearchParams: null,
-    propertyIdMap,
-    savedLeadData: {
-      name: lead.name || null,
-      interest: lead.interest || null,
-      location: lead.location || null,
-      size: lead.size || null,
-      budget: lead.budget?.toString() || null,
-      is_offplan: lead.is_offplan ?? null,
-      completion_range: lead.completion_range || null
-    }
+    newPropertiesThisTurn: null
   };
 
   console.log('Processing message for lead:', lead.id, '| Phone:', cleanPhone);
 
- let availableOptionsContext = '';
+  // Load inventory from database
+  let availableOptionsContext = '';
   try {
     const options = await tools.getAvailableOptions();
-
     if (options && options.locationSummary && options.locationSummary.length > 0) {
       const locationDetails = options.locationSummary.map(loc =>
-        `  ${loc.location}: ${loc.bedrooms.join(', ')} | ` +
-        `${loc.priceRange} | ` +
-        `${loc.hasOffplan && loc.hasReady ? 'offplan + ready' : loc.hasOffplan ? 'offplan only' : 'ready only'}`
+        `  ${loc.location}: ${loc.bedrooms.join(', ')} | ${loc.priceRange} | ${loc.hasOffplan && loc.hasReady ? 'offplan + ready' : loc.hasOffplan ? 'offplan only' : 'ready only'}`
       ).join('\n');
 
       availableOptionsContext =
-        `\n\nCURRENT DATABASE INVENTORY — THIS IS ALL YOU HAVE:\n` +
-        `Property types: ${options.types.join(', ') || 'none'}\n` +
-        `Overall price range: ${options.overallPriceRange || 'N/A'}\n` +
-        `\nAvailable by location:\n${locationDetails}\n` +
-        `\nHas offplan: ${options.hasOffplan ? 'Yes' : 'No'}\n` +
-        `Has ready: ${options.hasReady ? 'Yes' : 'No'}\n\n` +
-        `STRICT RULE: Only suggest locations, bedroom counts, and price ranges from this inventory. ` +
-        `Never use outside knowledge. If asked about anything not in this list, say it is not available ` +
-        `and offer what IS available from this list.`;
+        `\n\nCURRENT DATABASE INVENTORY:\n` +
+        `Types: ${options.types.join(', ')}\n` +
+        `Price range: ${options.overallPriceRange}\n` +
+        `\nBy location:\n${locationDetails}\n` +
+        `\nOnly suggest what is in this inventory. Never use outside knowledge.`;
     }
   } catch (err) {
-    console.error('Failed to load available options:', err.message);
-    // Continue without inventory — do not crash the conversation
+    console.error('Failed to load inventory:', err.message);
   }
 
-  // Add properties already shown to this client into the system context
-  let dynamicContext = availableOptionsContext;
+  // Build client profile from database — this is Claude's long term memory
+  const clientProfile = buildClientProfile(lead, sessionSummary);
 
-  if (hasExistingSearchResults && existingSearchResults.length > 0) {
-    const propertyList = existingSearchResults.map(p =>
-      `Property ${p.number}: ${p.name} | ID: ${p.id} | Price: KES ${Number(p.price).toLocaleString()} | Location: ${p.location}`
-    ).join('\n');
+  const systemContext = SYSTEM_PROMPT + availableOptionsContext + clientProfile;
 
-    dynamicContext +=
-      `\n\nPROPERTIES ALREADY SHOWN TO THIS CLIENT:\n` +
-      `${propertyList}\n\n` +
-      `Use these exact IDs for bookings. Do not call search_properties to find IDs already listed here.`;
-  }
-  
   const messages = [
-    ...conversationHistory.map(h => ({
-      role: h.role,
-      content: h.content
-    })),
-    {
-      role: 'user',
-      content: userMessage
-    }
+    ...conversationHistory.map(h => ({ role: h.role, content: h.content })),
+    { role: 'user', content: userMessage }
   ];
-
 
   let finalText = null;
   let iterations = 0;
@@ -738,18 +605,15 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
     let response;
     try {
       response = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT + dynamicContext,
-      tools: TOOL_DEFINITIONS,
-      messages: messages
-    });
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1024,
+        system: systemContext,
+        tools: TOOL_DEFINITIONS,
+        messages: messages
+      });
     } catch (err) {
       console.error('Claude API error:', err.message);
-      return {
-        text: 'Sorry, I am having trouble right now. Please try again in a moment.',
-        properties: null
-      };
+      return { text: 'Sorry, I am having trouble right now. Please try again.', properties: null };
     }
 
     console.log('Stop reason:', response.stop_reason);
@@ -757,7 +621,7 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
 
     if (response.stop_reason === 'end_turn') {
       for (const block of response.content) {
-        if (block.type === 'text') {
+        if (block.type === 'text' && block.text?.trim()) {
           finalText = block.text;
           break;
         }
@@ -766,25 +630,20 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
     }
 
     if (response.stop_reason === 'tool_use') {
-      messages.push({
-        role: 'assistant',
-        content: response.content
-      });
+      messages.push({ role: 'assistant', content: response.content });
 
       const toolResults = [];
-
       for (const block of response.content) {
         if (block.type !== 'tool_use') continue;
 
-        console.log(`Executing tool: ${block.name}`);
-        console.log('Tool input:', JSON.stringify(block.input));
+        console.log(`Executing tool: ${block.name}`, JSON.stringify(block.input));
 
         let result;
         try {
           result = await executeTool(block.name, block.input, context);
-          console.log(`Tool result for ${block.name}:`, JSON.stringify(result).substring(0, 200));
+          console.log(`Result:`, JSON.stringify(result).substring(0, 200));
         } catch (err) {
-          console.error(`Tool execution error for ${block.name}:`, err.message);
+          console.error(`Tool error:`, err.message);
           result = { error: err.message };
         }
 
@@ -795,26 +654,16 @@ async function processMessage({ userMessage, lead, conversationHistory }) {
         });
       }
 
-      messages.push({
-        role: 'user',
-        content: toolResults
-      });
-
+      messages.push({ role: 'user', content: toolResults });
       continue;
     }
 
-    // Unexpected stop reason
-    console.log('Unexpected stop reason:', response.stop_reason);
     break;
   }
 
-  if (!finalText) {
-    finalText = 'I am sorry, something went wrong. Please try again.';
-  }
-
   return {
-    text: finalText,
-    properties: context.newPropertiesFound ? context.lastProperties : null
+    text: finalText || 'I am sorry, something went wrong. Please try again.',
+    properties: context.newPropertiesThisTurn || null
   };
 }
 

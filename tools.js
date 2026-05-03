@@ -29,7 +29,7 @@ const SYDIA_WHATSAPP = process.env.SYDIA_WHATSAPP_NUMBER;
 // ============================================
 // TOOL: Get or create lead
 // ============================================
-async function getOrCreateLead(phone, name = null) {
+async function getOrCreateLead(phone) {
   const { data: existing } = await supabase
     .from('leads')
     .select('*')
@@ -44,7 +44,6 @@ async function getOrCreateLead(phone, name = null) {
     .insert({
       phone,
       tenant_id: TENANT_ID,
-      name: name || null,
       status: 'New',
       conversation_stage: 'ai_agent'
     })
@@ -862,12 +861,60 @@ async function saveMessage(leadId, role, content) {
     .insert({ lead_id: leadId, role, content });
 }
 
+// ============================================
+// Generate session summary using Claude
+// ============================================
+async function generateSessionSummary(conversationHistory) {
+  if (!conversationHistory || conversationHistory.length === 0) return null;
+
+  try {
+    const Anthropic = require('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    const historyText = conversationHistory
+      .slice(-20) // Last 20 messages only
+      .map(h => `${h.role}: ${h.content}`)
+      .join('\n');
+
+    const response = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001', // Use cheapest model for summary
+      max_tokens: 200,
+      messages: [{
+        role: 'user',
+        content:
+          `Summarize this property search conversation in 2-3 sentences. ` +
+          `Focus on: what the client was looking for, what properties were shown, ` +
+          `whether a booking was made or cancelled, and the outcome.\n\n` +
+          `Conversation:\n${historyText}`
+      }]
+    });
+
+    return response.content[0]?.text || null;
+  } catch (err) {
+    console.error('Summary generation error:', err.message);
+    return null;
+  }
+}
+
+// ============================================
+// Clear conversation history
+// ============================================
+async function clearConversationHistory(leadId) {
+  await supabase
+    .from('conversation_history')
+    .delete()
+    .eq('lead_id', leadId);
+  console.log('Conversation history cleared:', leadId);
+}
+
 module.exports = {
   getOrCreateLead,
   updateLead,
   getAvailableOptions, 
   getLocations,
   getBedroomOptions,
+  generateSessionSummary,
+  clearConversationHistory,
   getCompletionDates,
   searchProperties,
   getAvailableSlots,

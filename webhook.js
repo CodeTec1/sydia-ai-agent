@@ -1,3 +1,4 @@
+const supabase = require('./supabase');
 const express = require('express');
 const router = express.Router();
 const twilio = require('twilio');
@@ -42,13 +43,44 @@ router.post('/', async (req, res) => {
   try {
     const lead = await tools.getOrCreateLead(from);
     if (!lead) {
-      await sendMessage(from, 'Welcome to Sydia Realty! Please try sending your message again.');
+      await sendMessage(from, 'Welcome to Sydia Realty! Please try again.');
       return;
     }
 
     console.log('Lead ID:', lead.id, '| Name:', lead.name || 'Unknown');
 
-    const history = await tools.getConversationHistory(lead.id);
+    let history = await tools.getConversationHistory(lead.id);
+    let sessionSummary = null;
+
+    // Detect new session — more than 6 hours since last message
+    if (history.length > 0) {
+      const lastMessage = history[history.length - 1];
+      const lastMessageTime = new Date(lastMessage.created_at || Date.now());
+      const hoursSince = (Date.now() - lastMessageTime.getTime()) / (1000 * 60 * 60);
+
+      if (hoursSince > 6) {
+        console.log(`New session detected — ${Math.round(hoursSince)} hours since last message`);
+
+        // Generate summary of previous session before clearing
+        sessionSummary = await tools.generateSessionSummary(history);
+        console.log('Session summary:', sessionSummary);
+
+        // Save summary to lead for future reference
+        if (sessionSummary) {
+          await supabase
+            .from('leads')
+            .update({ notes: sessionSummary })
+            .eq('id', lead.id);
+        }
+
+        // Clear stale conversation history
+        await tools.clearConversationHistory(lead.id);
+        history = [];
+
+        console.log('History cleared. Fresh session starting with client profile.');
+      }
+    }
+
     console.log('History length:', history.length);
 
     await tools.saveMessage(lead.id, 'user', userMessage);
@@ -59,7 +91,8 @@ router.post('/', async (req, res) => {
       const result = await processMessage({
         userMessage,
         lead,
-        conversationHistory: history
+        conversationHistory: history,
+        sessionSummary
       });
       aiResponse = result.text;
       properties = result.properties;
