@@ -114,8 +114,6 @@ Before calling search_properties, try to have:
 
 Once you have enough usable information, call search_properties immediately. Do not describe or promise anything before calling the tool.
 
-## WHEN NOT TO RE-SEARCH
-Once properties have been found and shown, do not search again unless the client asks for completely different properties.
 
 ## YOUR FLOW (flexible, not rigid)
 - Greet the client warmly if they are new, use their name if you know it
@@ -151,8 +149,18 @@ When a client wants to book multiple properties:
 5. After a slot is used for one property, it is no longer available for the next property
 6. When a slot conflict occurs, offer the next available slot for that specific property only — do not re-book properties already confirmed
 
-PROPERTY ID RESOLUTION
-You will see a SYSTEM NOTE at the start of some conversations listing the properties already shown with their exact IDs. Always use those IDs directly. Never call search_properties when you already have the property IDs in the system note.
+TOOL USAGE
+Use tools whenever you need real data. Search for properties when the client asks about properties. Get slots when they want to book. Create bookings when they confirm a time. Update the lead when you learn something new about them.
+
+Trust your judgment. You can see the full conversation history. You know what has been discussed. Make decisions naturally based on what the client is saying right now.
+
+When a client changes criteria — different location, bedrooms, budget — search again with the new criteria. When they are asking about something already discussed in this conversation, answer from the conversation. You do not need rules for this. Just reason naturally.
+
+CRITICAL:
+The inventory above gives you awareness of what exists. But always confirm actual availability by calling search_properties before presenting anything to the client. The inventory tells you what to expect. The tool tells you what actually exists right now.
+
+BOOKING RETRY
+If create_booking fails because a slot is taken, immediately call get_available_slots again to get fresh slots. Then present the updated options to the client. Never tell the client a slot is taken without immediately offering alternatives.
 
 ## WHAT TO DO WHEN SOMETHING IS NOT AVAILABLE
 If a client asks for a location not in the inventory:
@@ -206,8 +214,6 @@ If a tool fails or returns nothing:
 - Offer next step (adjust search or connect to agent)
 - Never guess
 
-CRITICAL — PROPERTY IDs ARE IN YOUR CONVERSATION HISTORY
-After you have searched for properties once, the property IDs are saved in the conversation. Do NOT call search_properties again unless the client explicitly asks for different criteria.
 
 When a client says things like "let's book", "number 1", "second option" — use the existing properties.
 
@@ -225,21 +231,6 @@ Sometimes clients will message after a viewing. They may say things like:
 
 Handle these naturally. Do not ask them numbered questions about interest level. Just have a real conversation.
 
-TOOL USAGE DISCIPLINE — READ THIS CAREFULLY
-
-One tool at a time where possible. Here are the rules:
-
-When client gives their name → call update_lead once with name only. Nothing else.
-
-When client gives location and bedrooms → call update_lead once with those fields, then call search_properties once. That is two tools maximum for this turn.
-
-When client picks a property → call get_available_slots once. Do not call search_properties. Do not call update_lead unless you have new information that is not already saved.
-
-When client picks a time → call create_booking once. Do not call search_properties. Do not call get_available_slots again unless the slot failed.
-
-When client asks a question about a property already shown → answer from conversation history. Do not call any tool.
-
-The goal is maximum one or two tool calls per turn. Every extra tool call costs time and money. Only call a tool if you genuinely need new information that is not already in this conversation.
 
 MULTI-LOCATION SEARCHES
 When a client asks for properties in two or more locations, call search_properties separately for each location one after the other. The results will be combined automatically and sent as one numbered list. After both searches complete, write a short message like "I found properties in both Kilimani and Westlands for you, see the details below." Do not describe individual properties in your text.
@@ -268,15 +259,7 @@ When a client changes what they are looking for — different location, differen
 // ============================================
 const TOOL_DEFINITIONS = [
 
-  {
-    name: 'get_available_options',
-    description: 'Get all available property types, locations, and bedroom options from the database. Call this at the start of every conversation before answering any questions about what is available. This tells you exactly what Sydia Realty currently has in stock.',
-    input_schema: {
-      type: 'object',
-      properties: {},
-      required: []
-    }
-  },
+  
 
   {
     name: 'get_locations',
@@ -286,7 +269,7 @@ const TOOL_DEFINITIONS = [
       properties: {
         interest: {
           type: 'string',
-          description: 'Property type: Buy, Rent, or Land'
+          description: 'Property type: Buy or Rent'
         }
       },
       required: ['interest']
@@ -298,7 +281,7 @@ const TOOL_DEFINITIONS = [
     input_schema: {
       type: 'object',
       properties: {
-        interest: { type: 'string', description: 'Property type: Buy, Rent, or Land' },
+        interest: { type: 'string', description: 'Property type: Buy or Rent' },
         location: { type: 'string', description: 'The area the client is interested in' }
       },
       required: ['interest', 'location']
@@ -324,7 +307,7 @@ const TOOL_DEFINITIONS = [
     input_schema: {
       type: 'object',
       properties: {
-        interest: { type: 'string', description: 'Buy, Rent, or Land' },
+        interest: { type: 'string', description: 'Buy or Rent' },
         location: { type: 'string', description: 'Area name' },
         bedrooms: { type: 'number', description: 'Number of bedrooms' },
         budget: { type: 'number', description: 'Budget in KES' },
@@ -417,10 +400,6 @@ async function executeTool(toolName, toolInput, context) {
 
   switch (toolName) {
 
-    case 'get_available_options': {
-      return await tools.getAvailableOptions();
-    }
-
     case 'get_locations': {
       return await tools.getLocations(toolInput.interest);
     }
@@ -444,20 +423,16 @@ async function executeTool(toolName, toolInput, context) {
       if (result.properties && result.properties.length > 0) {
         context.newPropertiesThisTurn = result.properties;
 
-        await tools.updateLead(context.leadId, {
-          search_results: result.properties.map((p, i) => ({
-            number: i + 1,
-            id: p.id,
-            name: p.name,
-            price: p.rawPrice,
-            location: p.location,
-            address: p.address
-          })),
-          interest: toolInput.interest || undefined,
-          location: toolInput.location || undefined,
-          size: toolInput.bedrooms !== undefined ? `${toolInput.bedrooms} bedroom` : undefined,
-          budget: toolInput.budget ? toolInput.budget.toString() : undefined
-        });
+        // Save only long-term preferences — never session data like search_results
+        const preferencesToSave = {};
+        if (toolInput.interest) preferencesToSave.interest = toolInput.interest;
+        if (toolInput.location) preferencesToSave.location = toolInput.location;
+        if (toolInput.bedrooms !== undefined) preferencesToSave.size = `${toolInput.bedrooms} bedroom`;
+        if (toolInput.budget) preferencesToSave.budget = toolInput.budget.toString();
+
+        if (Object.keys(preferencesToSave).length > 0) {
+          await tools.updateLead(context.leadId, preferencesToSave);
+        }
       }
 
       return result;
@@ -484,7 +459,7 @@ async function executeTool(toolName, toolInput, context) {
         propertyId: toolInput.propertyId || context.currentPropertyId,
         slotNumber: toolInput.slotNumber,
         slotMap: toolInput.slotMap || context.currentSlotMap,
-        leadName: toolInput.leadName || context.leadName || 'Client',
+        leadName: context.leadName || toolInput.leadName || 'Client', // Server enforces this
         leadPhone: context.leadPhone
       };
 
@@ -596,7 +571,7 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
 
   let finalText = null;
   let iterations = 0;
-  const MAX_ITERATIONS = 10;
+  const MAX_ITERATIONS = 5;
 
   while (iterations < MAX_ITERATIONS) {
     iterations++;

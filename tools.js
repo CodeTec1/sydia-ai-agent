@@ -325,7 +325,7 @@ async function searchProperties({ interest, location, bedrooms, budget, isOffpla
     query = query.eq('is_offplan', false);
   }
 
-  if (normalizedInterest !== 'Land' && bedrooms !== null && bedrooms !== undefined) {
+  if (bedrooms !== null && bedrooms !== undefined) {
     query = query.eq('bedrooms', parseInt(bedrooms));
   }
 

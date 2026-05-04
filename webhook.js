@@ -26,6 +26,18 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function sanitizeForWhatsApp(text) {
+  if (!text) return text;
+  // Remove markdown that WhatsApp displays as literal characters
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '$1')  // bold
+    .replace(/\*(.*?)\*/g, '$1')       // italic
+    .replace(/_(.*?)_/g, '$1')         // underscore italic
+    .replace(/`(.*?)`/g, '$1')         // inline code
+    .replace(/#{1,6}\s/g, '')          // headers
+    .trim();
+}
+
 router.post('/', async (req, res) => {
   const from = req.body.From;
   const userMessage = req.body.Body?.trim();
@@ -51,6 +63,7 @@ router.post('/', async (req, res) => {
 
     let history = await tools.getConversationHistory(lead.id);
     let sessionSummary = null;
+    const previousNotes = lead.notes || null;
 
     // Detect new session — more than 6 hours since last message
     if (history.length > 0) {
@@ -65,7 +78,7 @@ router.post('/', async (req, res) => {
         sessionSummary = await tools.generateSessionSummary(history);
         console.log('Session summary:', sessionSummary);
 
-        // Save summary to lead for future reference
+        // Save summary to lead notes for future sessions
         if (sessionSummary) {
           await supabase
             .from('leads')
@@ -73,11 +86,26 @@ router.post('/', async (req, res) => {
             .eq('id', lead.id);
         }
 
-        // Clear stale conversation history
+        // Clear session data from lead — temporary data, not long term memory
+        await supabase
+          .from('leads')
+          .update({
+            search_results: null,
+            available_slots: null,
+            selected_property_id: null
+          })
+          .eq('id', lead.id);
+
+        // Clear local lead object to match
+        lead.search_results = null;
+        lead.available_slots = null;
+        lead.selected_property_id = null;
+
+        // Clear conversation history for fresh session
         await tools.clearConversationHistory(lead.id);
         history = [];
 
-        console.log('History cleared. Fresh session starting with client profile.');
+        console.log('Session cleared. Starting fresh with client profile.');
       }
     }
 
@@ -92,15 +120,14 @@ router.post('/', async (req, res) => {
         userMessage,
         lead,
         conversationHistory: history,
-        sessionSummary
+        sessionSummary: sessionSummary || previousNotes
       });
       aiResponse = result.text;
       properties = result.properties;
     } catch (aiErr) {
       console.error('AI processing error:', aiErr.message);
       console.error('Stack:', aiErr.stack);
-      // Send a graceful response instead of "something went wrong"
-      aiResponse = `Hi there! I am Nina from Sydia Realty. I am here to help you find your perfect property in Nairobi. What are you looking for today?`;
+      aiResponse = 'Hi! I am Nina from Sydia Realty. I am here to help you find your perfect property in Nairobi. What are you looking for today?';
       properties = null;
     }
 
@@ -108,18 +135,9 @@ router.post('/', async (req, res) => {
     console.log('Properties found:', properties?.length || 0);
 
     await tools.saveMessage(lead.id, 'assistant', aiResponse);
-    await sendMessage(from, aiResponse);
+    await sendMessage(from, sanitizeForWhatsApp(aiResponse));
 
     if (properties && properties.length > 0) {
-      // Only send properties that have not been sent before in this session
-      const alreadySentIds = new Set(
-        (lead.search_results || []).map(p => p.id)
-      );
-
-      // On first send, alreadySentIds will be empty so all go through
-      // After first send, lead.search_results is updated, so duplicates are blocked
-      // But since we fetch lead once at start of webhook, this session tracks correctly
-
       await delay(2000);
 
       for (let i = 0; i < properties.length; i++) {
@@ -128,12 +146,16 @@ router.post('/', async (req, res) => {
         const sizeText = p.bedrooms === 0 ? 'Studio' : p.bedrooms ? `${p.bedrooms} Bed` : '';
         const sqmText = p.sqm ? ` (${p.sqm}sqm)` : '';
 
+        const priceDisplay = typeof p.price === 'number'
+          ? `KES ${Number(p.price).toLocaleString()}`
+          : (p.price?.toString().startsWith('KES') ? p.price : `KES ${Number(p.price || p.rawPrice || 0).toLocaleString()}`);
+
         const propertyMsg =
           `Property ${p.number || i + 1} of ${properties.length}\n\n` +
           (p.project ? `${p.project}\n` : '') +
           `${p.name}\n\n` +
           `Location: ${p.location}\n` +
-          `Price: ${p.price}\n` +
+          `Price: ${priceDisplay}\n` +
           (sizeText ? `Size: ${sizeText}${sqmText}\n` : '') +
           (p.completion ? `Completion: ${p.completion}\n` : '') +
           `Address: ${p.address}` +
