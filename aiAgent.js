@@ -157,7 +157,7 @@ Trust your judgment. You can see the full conversation history. You know what ha
 When a client changes criteria — different location, bedrooms, budget — search again with the new criteria. When they are asking about something already discussed in this conversation, answer from the conversation. You do not need rules for this. Just reason naturally.
 
 CRITICAL:
-The inventory provided in this prompt gives you awareness of what exists. But always confirm actual availability by calling search_properties before presenting anything to the client. The inventory tells you what to expect. The tool tells you what actually exists right now.
+The inventory above gives you awareness of what exists. But always confirm actual availability by calling search_properties before presenting anything to the client. The inventory tells you what to expect. The tool tells you what actually exists right now.
 
 BOOKING RETRY
 If create_booking fails because a slot is taken, immediately call get_available_slots again to get fresh slots. Then present the updated options to the client. Never tell the client a slot is taken without immediately offering alternatives.
@@ -465,6 +465,10 @@ async function executeTool(toolName, toolInput, context) {
 
       console.log('Booking input:', JSON.stringify(bookingInput));
 
+      if (!bookingInput.propertyId) {
+        return { success: false, error: 'Missing property ID. Please confirm which property the client wants to book.' };
+      }
+
       if (!bookingInput.slotMap) {
         return { success: false, error: 'No slot map available. Please get available slots first.' };
       }
@@ -544,19 +548,27 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
   try {
     const options = await tools.getAvailableOptions();
     if (options && options.locationSummary && options.locationSummary.length > 0) {
+      // Filter out Land — Sydia Realty only deals in Buy and Rent
+      const filteredTypes = (options.types || []).filter(t => t !== 'Land');
+
       const locationDetails = options.locationSummary.map(loc =>
         `  ${loc.location}: ${loc.bedrooms.join(', ')} | ${loc.priceRange} | ${loc.hasOffplan && loc.hasReady ? 'offplan + ready' : loc.hasOffplan ? 'offplan only' : 'ready only'}`
       ).join('\n');
 
       availableOptionsContext =
         `\n\nCURRENT DATABASE INVENTORY:\n` +
-        `Types: ${options.types.join(', ')}\n` +
+        `Types: ${filteredTypes.join(', ')}\n` +
         `Price range: ${options.overallPriceRange}\n` +
         `\nBy location:\n${locationDetails}\n` +
         `\nOnly suggest what is in this inventory. Never use outside knowledge.`;
     }
   } catch (err) {
     console.error('Failed to load inventory:', err.message);
+  }
+
+  // Fallback protection if inventory failed to load
+  if (!availableOptionsContext) {
+    availableOptionsContext = '\n\nInventory temporarily unavailable. Rely strictly on tool calls to confirm what is available. Do not guess or assume anything.';
   }
 
   // Build client profile from database — this is Claude's long term memory
@@ -635,6 +647,22 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
 
     break;
   }
+
+  console.log('AI final text:', finalText?.substring(0, 100));
+  console.log('Tool called this turn:', context.newPropertiesThisTurn ? 'YES — properties found' : 'NO tool result');
+
+  if (finalText?.toLowerCase().includes('i found') && !context.newPropertiesThisTurn) {
+    console.warn('POSSIBLE HALLUCINATION: Claude claimed to find properties without calling search tool');
+  }
+
+  if (finalText?.toLowerCase().includes('we have') && !context.newPropertiesThisTurn) {
+    console.warn('POSSIBLE HALLUCINATION: Claude claimed availability without calling search tool');
+  }
+
+  return {
+    text: finalText || 'I am sorry, something went wrong. Please try again.',
+    properties: context.newPropertiesThisTurn || null
+  };
 
   return {
     text: finalText || 'I am sorry, something went wrong. Please try again.',

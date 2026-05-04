@@ -260,7 +260,7 @@ async function getBedroomOptions(interest, location) {
     .select('bedrooms')
     .eq('tenant_id', TENANT_ID)
     .ilike('type', normalizedInterest)
-    .ilike('location', normalizedLocation)
+    .ilike('location', `%${normalizedLocation}%`)
     .eq('available', true);
 
   if (!data || data.length === 0) return { bedrooms: [] };
@@ -281,7 +281,7 @@ async function getCompletionDates(interest, location, bedrooms = null, budget = 
     .select('completion_date')
     .eq('tenant_id', TENANT_ID)
     .ilike('type', normalizedInterest)
-    .ilike('location', normalizedLocation)
+    .ilike('location', `%${normalizedLocation}%`)
     .eq('available', true)
     .eq('is_offplan', true)
     .not('completion_date', 'is', null);
@@ -308,7 +308,7 @@ async function searchProperties({ interest, location, bedrooms, budget, isOffpla
     .select('id, property_name, project_name, type, price, bedrooms, sqm, plot_size, location, address, photo_url, description, completion_date, is_offplan')
     .eq('tenant_id', TENANT_ID)
     .ilike('type', normalizedInterest)
-    .ilike('location', normalizedLocation)
+    .ilike('location', `%${normalizedLocation}%`)
     .eq('available', true)
     .order('price', { ascending: true })
     .limit(5);
@@ -340,7 +340,7 @@ async function searchProperties({ interest, location, bedrooms, budget, isOffpla
       .select('bedrooms, price, completion_date, location')
       .eq('tenant_id', TENANT_ID)
       .ilike('type', normalizedInterest)
-      .ilike('location', normalizedLocation)
+      .ilike('location', `%${normalizedLocation}%`)
       .eq('available', true)
       .limit(10);
 

@@ -46,6 +46,12 @@ router.post('/', async (req, res) => {
     return res.status(200).send('<Response></Response>');
   }
 
+  //  spam protection
+  if (userMessage.length > 1000) {
+    console.log('Message too long, ignoring:', from);
+    return res.status(200).send('<Response></Response>');
+  }
+
   console.log(`\n========================================`);
   console.log(`Message from ${from}: ${userMessage}`);
   console.log(`========================================`);
@@ -122,7 +128,7 @@ router.post('/', async (req, res) => {
         conversationHistory: history,
         sessionSummary: sessionSummary || previousNotes
       });
-      aiResponse = result.text;
+      aiResponse = result.text || 'Hi, I am Nina from Sydia Realty. How can I help you today?';
       properties = result.properties;
     } catch (aiErr) {
       console.error('AI processing error:', aiErr.message);
@@ -134,40 +140,50 @@ router.post('/', async (req, res) => {
     console.log('AI response length:', aiResponse?.length || 0);
     console.log('Properties found:', properties?.length || 0);
 
-    await tools.saveMessage(lead.id, 'assistant', aiResponse);
-    await sendMessage(from, sanitizeForWhatsApp(aiResponse));
+    const cleanResponse = sanitizeForWhatsApp(aiResponse);
+    await tools.saveMessage(lead.id, 'assistant', cleanResponse);
+    await sendMessage(from, cleanResponse);
 
     if (properties && properties.length > 0) {
       await delay(2000);
 
+      // Log first property to confirm field mapping is correct
+      if (properties.length > 0) {
+        console.log('Property sample:', JSON.stringify(properties[0]));
+      }
+
       for (let i = 0; i < properties.length; i++) {
-        const p = properties[i];
+        try {
+          const p = properties[i];
 
-        const sizeText = p.bedrooms === 0 ? 'Studio' : p.bedrooms ? `${p.bedrooms} Bed` : '';
-        const sqmText = p.sqm ? ` (${p.sqm}sqm)` : '';
+          const sizeText = p.bedrooms === 0 ? 'Studio' : p.bedrooms ? `${p.bedrooms} Bed` : '';
+          const sqmText = p.sqm ? ` (${p.sqm}sqm)` : '';
 
-        const priceDisplay = typeof p.price === 'number'
-          ? `KES ${Number(p.price).toLocaleString()}`
-          : (p.price?.toString().startsWith('KES') ? p.price : `KES ${Number(p.price || p.rawPrice || 0).toLocaleString()}`);
+          const priceDisplay = typeof p.price === 'number'
+            ? `KES ${Number(p.price).toLocaleString()}`
+            : (p.price?.toString().startsWith('KES') ? p.price : `KES ${Number(p.price || p.rawPrice || 0).toLocaleString()}`);
 
-        const propertyMsg =
-          `Property ${p.number || i + 1} of ${properties.length}\n\n` +
-          (p.project ? `${p.project}\n` : '') +
-          `${p.name}\n\n` +
-          `Location: ${p.location}\n` +
-          `Price: ${priceDisplay}\n` +
-          (sizeText ? `Size: ${sizeText}${sqmText}\n` : '') +
-          (p.completion ? `Completion: ${p.completion}\n` : '') +
-          `Address: ${p.address}` +
-          (p.description ? `\n\n${p.description}` : '');
+          const propertyMsg =
+            `Property ${p.number || i + 1} of ${properties.length}\n\n` +
+            (p.project ? `${p.project}\n` : '') +
+            `${p.name}\n\n` +
+            `Location: ${p.location}\n` +
+            `Price: ${priceDisplay}\n` +
+            (sizeText ? `Size: ${sizeText}${sqmText}\n` : '') +
+            (p.completion ? `Completion: ${p.completion}\n` : '') +
+            `Address: ${p.address}` +
+            (p.description ? `\n\n${p.description}` : '');
 
-        if (p.photo && p.photo.startsWith('http') && !p.photo.includes('photos.app.goo.gl')) {
-          await sendMessage(from, propertyMsg, p.photo);
-        } else {
-          await sendMessage(from, propertyMsg);
+          if (p.photo && p.photo.startsWith('http') && !p.photo.includes('photos.app.goo.gl')) {
+            await sendMessage(from, propertyMsg, p.photo);
+          } else {
+            await sendMessage(from, propertyMsg);
+          }
+
+          if (i < properties.length - 1) await delay(3000);
+        } catch (sendErr) {
+          console.error(`Failed to send property ${i + 1}:`, sendErr.message);
         }
-
-        if (i < properties.length - 1) await delay(3000);
       }
 
       await delay(properties.length * 2000 + 1000);
