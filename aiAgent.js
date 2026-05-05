@@ -432,22 +432,28 @@ async function executeTool(toolName, toolInput, context) {
       const result = await tools.searchProperties(toolInput);
 
       if (result.properties && result.properties.length > 0) {
-        context.newPropertiesThisTurn = result.properties;
+        // Only send cards if this is a fresh search — not a mid-flow re-search
+        if (!context.propertiesAlreadySent) {
+          context.newPropertiesThisTurn = result.properties;
+          console.log('Fresh search — property cards will be sent');
+        } else {
+          console.log('Properties already sent this session — skipping card resend');
+        }
 
-        // Store property IDs in context so Claude can use them without re-searching
+        // Always store found IDs so Claude can use them without re-searching
         context.foundPropertyIds = result.properties.map(p => ({
           number: p.number,
           id: p.id,
           name: p.name
         }));
 
-        // If only one property found, pre-select it
+        // Auto-select if single result
         if (result.properties.length === 1) {
           context.currentPropertyId = result.properties[0].id;
           console.log('Single property auto-selected:', context.currentPropertyId);
         }
 
-        // Save preferences to lead
+        // Save preferences and mark stage
         const preferencesToSave = {};
         if (toolInput.interest) preferencesToSave.interest = toolInput.interest;
         if (toolInput.location) preferencesToSave.location = toolInput.location;
@@ -455,9 +461,7 @@ async function executeTool(toolName, toolInput, context) {
         if (toolInput.budget) preferencesToSave.budget = toolInput.budget.toString();
         preferencesToSave.conversation_stage = 'properties_shown';
 
-        if (Object.keys(preferencesToSave).length > 0) {
-          await tools.updateLead(context.leadId, preferencesToSave);
-        }
+        await tools.updateLead(context.leadId, preferencesToSave);
       }
 
       return result;
@@ -501,7 +505,16 @@ async function executeTool(toolName, toolInput, context) {
         return { success: false, error: 'No slot map available. Please get available slots first.' };
       }
 
-      return await tools.createBooking(bookingInput);
+      const result = await tools.createBooking(bookingInput);
+
+      if (result.success) {
+        await tools.updateLead(context.leadId, {
+          conversation_stage: 'booking_confirmed'
+        });
+        console.log('Stage updated to booking_confirmed');
+      }
+
+      return result;
     }
 
     case 'cancel_booking': {
@@ -565,9 +578,11 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     leadName: lead.name || null,
     leadPhone: cleanPhone,
     currentSlotMap: lead.available_slots || null,
-    currentPropertyId: lead.selected_property_id || null,  // Load from DB
+    currentPropertyId: lead.selected_property_id || null,
     newPropertiesThisTurn: null,
-    foundPropertyIds: []
+    foundPropertyIds: [],
+    propertiesAlreadySent: ['properties_shown', 'selecting_slot', 'booking_confirmed']
+      .includes(lead.conversation_stage)
   };
 
   console.log('Processing message for lead:', lead.id, '| Phone:', cleanPhone);
@@ -603,8 +618,6 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
   // Build client profile from database — this is Claude's long term memory
   const clientProfile = buildClientProfile(lead, sessionSummary);
 
-  const systemContext = SYSTEM_PROMPT + availableOptionsContext + clientProfile;
-
   const messages = [
     ...conversationHistory.map(h => ({ role: h.role, content: h.content })),
     { role: 'user', content: userMessage }
@@ -612,8 +625,7 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
 
   // Inject current property context so Claude never needs to re-search for IDs
   let propertyContext = '';
-  if (lead.conversation_stage === 'properties_shown' || 
-      lead.conversation_stage === 'booking_confirmed') {
+  if (['properties_shown', 'selecting_slot', 'booking_confirmed'].includes(lead.conversation_stage)) {
     
     // Load the last known property from lead
     if (lead.selected_property_id) {
