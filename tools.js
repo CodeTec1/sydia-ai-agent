@@ -35,7 +35,7 @@ async function getOrCreateLead(phone) {
     .select('*')
     .eq('phone', phone)
     .eq('tenant_id', TENANT_ID)
-    .single();
+    .maybeSingle();
 
   if (existing) return existing;
 
@@ -303,6 +303,11 @@ async function searchProperties({ interest, location, bedrooms, budget, isOffpla
   const normalizedInterest = interest.charAt(0).toUpperCase() + interest.slice(1).toLowerCase();
   const normalizedLocation = location.charAt(0).toUpperCase() + location.slice(1).toLowerCase();
 
+  if (!location || location.trim() === '') {
+    console.error('searchProperties called with empty location');
+    return { properties: [], count: 0, error: 'Missing location' };
+  }
+
   let query = supabase
     .from('properties')
     .select('id, property_name, project_name, type, price, bedrooms, sqm, plot_size, location, address, photo_url, description, completion_date, is_offplan')
@@ -456,25 +461,33 @@ async function getAvailableSlots(propertyId) {
     day.setHours(0, 0, 0, 0);
     if (!isWorkingDay(day)) continue;
 
-    for (let hour = workStart; hour < workEnd && freeSlots.length < 7;) {
-      // Build slot in Kenya time correctly
-      const slotStartKenya = new Date(day);
-      slotStartKenya.setHours(0, 0, 0, 0);
-      
-      // Set to the working hour in UTC (Kenya = UTC+3, so 9am Kenya = 6am UTC)
-      const utcHour = hour - KENYA_OFFSET;
+    let currentMinutes = workStart * 60;
+
+    while (currentMinutes < workEnd * 60 && freeSlots.length < 7) {
+      const slotHour = Math.floor(currentMinutes / 60);
+      const slotMinute = currentMinutes % 60;
+
+      const utcHour = slotHour - KENYA_OFFSET;
       const slotStart = new Date(Date.UTC(
-        slotStartKenya.getFullYear(),
-        slotStartKenya.getMonth(),
-        slotStartKenya.getDate(),
+        day.getFullYear(),
+        day.getMonth(),
+        day.getDate(),
         utcHour,
-        0, 0, 0
+        slotMinute,
+        0, 0
       ));
 
       const slotEnd = new Date(slotStart.getTime() + slotDuration * 60 * 1000);
-      
-      if (slotStart <= minSlotTime) { hour++; continue; }
-      if (overlaps(slotStart, slotEnd)) { hour++; continue; }
+
+      if (slotStart <= minSlotTime) {
+        currentMinutes += slotDuration;
+        continue;
+      }
+
+      if (overlaps(slotStart, slotEnd)) {
+        currentMinutes += slotDuration;
+        continue;
+      }
 
       freeSlots.push({
         number: freeSlots.length + 1,
@@ -491,7 +504,7 @@ async function getAvailableSlots(propertyId) {
         })
       });
 
-      hour = Math.floor((hour * 60 + slotDuration) / 60);
+      currentMinutes += slotDuration;
     }
   }
 
@@ -553,7 +566,8 @@ async function createBooking({ leadId, propertyId, slotNumber, slotMap, leadName
     if (!slotData || !slotData.includes('|')) {
       return {
         success: false,
-        error: `Invalid slot number ${slotNumber}. Available slots: ${Object.keys(slots).join(', ')}`
+        slotExpired: true,
+        error: `Slot ${slotNumber} is no longer available. Please get fresh slots.`
       };
     }
 
@@ -749,7 +763,7 @@ async function createBooking({ leadId, propertyId, slotNumber, slotMap, leadName
 async function getConversationHistory(leadId) {
   const { data } = await supabase
     .from('conversation_history')
-    .select('role, content')
+    .select('role, content, created_at')
     .eq('lead_id', leadId)
     .order('created_at', { ascending: true })
     .limit(30);

@@ -27,14 +27,14 @@ function delay(ms) {
 }
 
 function sanitizeForWhatsApp(text) {
-  if (!text) return text;
-  // Remove markdown that WhatsApp displays as literal characters
+  if (!text) return 'Hi, I am Nina from Sydia Realty. How can I help you today?';
   return text
-    .replace(/\*\*(.*?)\*\*/g, '$1')  // bold
-    .replace(/\*(.*?)\*/g, '$1')       // italic
-    .replace(/_(.*?)_/g, '$1')         // underscore italic
-    .replace(/`(.*?)`/g, '$1')         // inline code
-    .replace(/#{1,6}\s/g, '')          // headers
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/_(.*?)_/g, '$1')
+    .replace(/`(.*?)`/g, '$1')
+    .replace(/~(.*?)~/g, '$1')
+    .replace(/#{1,6}\s/g, '')
     .trim();
 }
 
@@ -122,13 +122,17 @@ router.post('/', async (req, res) => {
     let aiResponse, properties;
 
     try {
+      const finalSummary = sessionSummary || lead.notes || null;
+
       const result = await processMessage({
         userMessage,
         lead,
         conversationHistory: history,
-        sessionSummary: sessionSummary || previousNotes
+        sessionSummary: finalSummary
       });
-      aiResponse = result.text || 'Hi, I am Nina from Sydia Realty. How can I help you today?';
+      aiResponse = result.text?.trim()
+      ? result.text
+      : 'Hi, I am Nina from Sydia Realty. How can I help you today?';
       properties = result.properties;
     } catch (aiErr) {
       console.error('AI processing error:', aiErr.message);
@@ -175,7 +179,11 @@ router.post('/', async (req, res) => {
             (p.description ? `\n\n${p.description}` : '');
 
           if (p.photo && p.photo.startsWith('http') && !p.photo.includes('photos.app.goo.gl')) {
-            await sendMessage(from, propertyMsg, p.photo);
+            try {
+              await sendMessage(from, propertyMsg, p.photo);
+            } catch {
+              await sendMessage(from, propertyMsg);
+            }
           } else {
             await sendMessage(from, propertyMsg);
           }
@@ -193,6 +201,15 @@ router.post('/', async (req, res) => {
       } else {
         await sendMessage(from, `Those are the ${properties.length} properties above. Just let me know which one you would like to visit and I will book a viewing for you.`);
       }
+
+      // Mark properties as shown AFTER they are actually sent to the user
+      await supabase
+        .from('leads')
+        .update({ conversation_stage: 'properties_shown' })
+        .eq('id', lead.id);
+
+      console.log('Stage updated to properties_shown after cards sent');
+
     }
 
   } catch (err) {

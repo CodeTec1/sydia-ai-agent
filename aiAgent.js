@@ -432,15 +432,38 @@ async function executeTool(toolName, toolInput, context) {
       const result = await tools.searchProperties(toolInput);
 
       if (result.properties && result.properties.length > 0) {
-        // Only send cards if this is a fresh search — not a mid-flow re-search
-        if (!context.propertiesAlreadySent) {
-          context.newPropertiesThisTurn = result.properties;
-          console.log('Fresh search — property cards will be sent');
-        } else {
-          console.log('Properties already sent this session — skipping card resend');
+
+        // Detect if search criteria changed — if yes, allow cards to resend
+        const incomingLocation = toolInput.location?.toLowerCase().trim();
+        const incomingBedrooms = toolInput.bedrooms;
+        const incomingBudget = toolInput.budget;
+        const incomingInterest = toolInput.interest?.toLowerCase().trim();
+
+        const savedLocation = context.savedLocation?.toLowerCase().trim();
+        const savedBedrooms = context.savedSize;
+        const savedBudget = context.savedBudget;
+        const savedInterest = context.savedInterest?.toLowerCase().trim();
+
+        const locationChanged = incomingLocation && savedLocation && incomingLocation !== savedLocation;
+        const bedroomsChanged = incomingBedrooms !== undefined && savedBedrooms !== null && incomingBedrooms !== savedBedrooms;
+        const budgetChanged = incomingBudget !== undefined && savedBudget !== null && incomingBudget !== savedBudget;
+        const interestChanged = incomingInterest && savedInterest && incomingInterest !== savedInterest;
+
+        if (locationChanged || bedroomsChanged || budgetChanged || interestChanged) {
+          console.log('Search criteria changed — resetting propertiesAlreadySent');
+          context.propertiesAlreadySent = false;
         }
 
-        // Always store found IDs so Claude can use them without re-searching
+        // Only send cards on fresh search
+        if (!context.propertiesAlreadySent) {
+          context.newPropertiesThisTurn = result.properties;
+          context.propertiesAlreadySent = true;
+          console.log('Fresh search — property cards will be sent');
+        } else {
+          console.log('Properties already sent this session — skipping resend');
+        }
+
+        // Always store found IDs so Claude can use them
         context.foundPropertyIds = result.properties.map(p => ({
           number: p.number,
           id: p.id,
@@ -462,6 +485,13 @@ async function executeTool(toolName, toolInput, context) {
         preferencesToSave.conversation_stage = 'properties_shown';
 
         await tools.updateLead(context.leadId, preferencesToSave);
+
+        // Update context to reflect latest search
+context.savedLocation = toolInput.location || context.savedLocation;
+context.savedSize = toolInput.bedrooms !== undefined ? toolInput.bedrooms : context.savedSize;
+context.savedBudget = toolInput.budget !== undefined ? toolInput.budget : context.savedBudget;
+context.savedInterest = toolInput.interest || context.savedInterest;
+
       }
 
       return result;
@@ -582,7 +612,11 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     newPropertiesThisTurn: null,
     foundPropertyIds: [],
     propertiesAlreadySent: ['properties_shown', 'selecting_slot', 'booking_confirmed']
-      .includes(lead.conversation_stage)
+      .includes(lead.conversation_stage),
+    savedLocation: lead.location || null,
+    savedSize: typeof lead.size === 'string' ? parseInt(lead.size, 10) || null : lead.size,
+    savedBudget: lead.budget ? Number(lead.budget) : null,
+    savedInterest: lead.interest || null
   };
 
   console.log('Processing message for lead:', lead.id, '| Phone:', cleanPhone);
@@ -712,11 +746,6 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
   if (finalText?.toLowerCase().includes('we have') && !context.newPropertiesThisTurn) {
     console.warn('POSSIBLE HALLUCINATION: Claude claimed availability without calling search tool');
   }
-
-  return {
-    text: finalText || 'I am sorry, something went wrong. Please try again.',
-    properties: context.newPropertiesThisTurn || null
-  };
 
   return {
     text: finalText || 'I am sorry, something went wrong. Please try again.',
