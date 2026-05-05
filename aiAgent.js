@@ -244,6 +244,17 @@ When a client returns after a break, you will also receive a PREVIOUS SESSION SU
 
 Never ask for information that is already in the CLIENT PROFILE.
 
+CONVERSATION STATE
+You will receive a CLIENT PROFILE with the current conversation stage. Use it to understand where you are in the flow:
+
+properties_shown — You have already shown properties. Do not search again unless the client asks for different criteria. The property IDs are in the conversation history.
+
+selecting_slot — The client has chosen a property and you are showing time slots. The selected property ID is in the CURRENT SELECTED PROPERTY section. Use it directly for create_booking.
+
+booking_confirmed — A booking exists. Do not search again. Focus on answering questions or handling changes.
+
+When you see CURRENT SELECTED PROPERTY with an ID, use that ID directly. Never call search_properties to retrieve an ID you already have.
+
 SESSION BEHAVIOR
 You are having a real conversation. You remember what was discussed earlier in this session through the conversation history. You remember who this person is through the CLIENT PROFILE. These are your two sources of memory — use both naturally.
 
@@ -423,12 +434,26 @@ async function executeTool(toolName, toolInput, context) {
       if (result.properties && result.properties.length > 0) {
         context.newPropertiesThisTurn = result.properties;
 
-        // Save only long-term preferences — never session data like search_results
+        // Store property IDs in context so Claude can use them without re-searching
+        context.foundPropertyIds = result.properties.map(p => ({
+          number: p.number,
+          id: p.id,
+          name: p.name
+        }));
+
+        // If only one property found, pre-select it
+        if (result.properties.length === 1) {
+          context.currentPropertyId = result.properties[0].id;
+          console.log('Single property auto-selected:', context.currentPropertyId);
+        }
+
+        // Save preferences to lead
         const preferencesToSave = {};
         if (toolInput.interest) preferencesToSave.interest = toolInput.interest;
         if (toolInput.location) preferencesToSave.location = toolInput.location;
         if (toolInput.bedrooms !== undefined) preferencesToSave.size = `${toolInput.bedrooms} bedroom`;
         if (toolInput.budget) preferencesToSave.budget = toolInput.budget.toString();
+        preferencesToSave.conversation_stage = 'properties_shown';
 
         if (Object.keys(preferencesToSave).length > 0) {
           await tools.updateLead(context.leadId, preferencesToSave);
@@ -445,8 +470,11 @@ async function executeTool(toolName, toolInput, context) {
         context.currentSlotMap = JSON.stringify(result.slotMap);
         context.currentPropertyId = toolInput.propertyId;
 
+        // Save to DB so next message knows which property is selected
         await tools.updateLead(context.leadId, {
-          available_slots: JSON.stringify(result.slotMap)
+          available_slots: JSON.stringify(result.slotMap),
+          selected_property_id: toolInput.propertyId,
+          conversation_stage: 'selecting_slot'
         });
       }
 
@@ -509,16 +537,16 @@ function buildClientProfile(lead, sessionSummary) {
     profile += `Name: Unknown — ask for name naturally in your first response.\n`;
   }
 
-  if (lead.interest) profile += `Previous interest: ${lead.interest}\n`;
-  if (lead.location) profile += `Previous location searched: ${lead.location}\n`;
-  if (lead.budget) profile += `Previous budget: KES ${Number(lead.budget).toLocaleString()}\n`;
-  if (lead.size) profile += `Previous size preference: ${lead.size}\n`;
-  if (lead.status) profile += `Current status: ${lead.status}\n`;
+  if (lead.interest) profile += `Interest: ${lead.interest}\n`;
+  if (lead.location) profile += `Location: ${lead.location}\n`;
+  if (lead.budget) profile += `Budget: KES ${Number(lead.budget).toLocaleString()}\n`;
+  if (lead.size) profile += `Size preference: ${lead.size}\n`;
+  if (lead.status) profile += `Status: ${lead.status}\n`;
+  if (lead.conversation_stage) profile += `Current stage: ${lead.conversation_stage}\n`;
 
   if (sessionSummary) {
     profile += `\nPREVIOUS SESSION SUMMARY:\n${sessionSummary}\n`;
-    profile += `\nThis client is returning after a break. Acknowledge the previous interaction naturally. `;
-    profile += `Ask what they need today — they may want something completely different.\n`;
+    profile += `This client is returning after a break. Acknowledge naturally and ask what they need today.\n`;
   }
 
   profile += `\nNever ask for information already in this profile.\n`;
@@ -537,8 +565,9 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     leadName: lead.name || null,
     leadPhone: cleanPhone,
     currentSlotMap: lead.available_slots || null,
-    currentPropertyId: null,
-    newPropertiesThisTurn: null
+    currentPropertyId: lead.selected_property_id || null,  // Load from DB
+    newPropertiesThisTurn: null,
+    foundPropertyIds: []
   };
 
   console.log('Processing message for lead:', lead.id, '| Phone:', cleanPhone);
@@ -580,6 +609,19 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     ...conversationHistory.map(h => ({ role: h.role, content: h.content })),
     { role: 'user', content: userMessage }
   ];
+
+  // Inject current property context so Claude never needs to re-search for IDs
+  let propertyContext = '';
+  if (lead.conversation_stage === 'properties_shown' || 
+      lead.conversation_stage === 'booking_confirmed') {
+    
+    // Load the last known property from lead
+    if (lead.selected_property_id) {
+      propertyContext = `\n\nCURRENT SELECTED PROPERTY:\nProperty ID: ${lead.selected_property_id}\nUse this ID directly for get_available_slots and create_booking. Do not call search_properties again.`;
+    }
+  }
+
+  const systemContext = SYSTEM_PROMPT + availableOptionsContext + clientProfile + propertyContext;
 
   let finalText = null;
   let iterations = 0;
