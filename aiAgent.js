@@ -3,6 +3,8 @@ const tools = require('./tools');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+const KNOWLEDGE_BASE = require('./knowledgeBase');
+
 // ============================================
 // SYSTEM PROMPT
 // ============================================
@@ -122,6 +124,13 @@ Once you have enough usable information, call search_properties immediately. Do 
 - Call search_properties as soon as possible
 - Present results briefly
 - Move toward booking when interest is shown
+
+KNOWLEDGE BASE USAGE
+You have access to Sydia Realty company knowledge including services, FAQs, client journey, objections, and escalation rules. Use this knowledge to answer general questions about the company, process, and investment.
+
+However — for all property availability, prices, locations, and bedroom counts — always use tools. Never use company knowledge to answer property-specific questions. The knowledge base tells you about the company. The tools tell you what is available right now.
+
+When a client is ready to reserve, wants an offer letter, or wants to speak with the team, escalate to a human immediately using the escalation language in your knowledge base.
 
 ## WHEN PRESENTING PROPERTIES
 After calling search_properties, write a short warm message that ends with something like "see the details below" or "take a look below" or "details coming right up". This is important because the property cards are sent after your message, so the client needs to know to look below.
@@ -683,7 +692,7 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     }
   }
 
-  const systemContext = SYSTEM_PROMPT + availableOptionsContext + clientProfile + propertyContext;
+  const systemContext = SYSTEM_PROMPT + availableOptionsContext + KNOWLEDGE_BASE + clientProfile + propertyContext;
 
   let finalText = null;
   let iterations = 0;
