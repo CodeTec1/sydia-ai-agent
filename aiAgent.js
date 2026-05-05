@@ -199,6 +199,9 @@ When a client wants to book:
 4. When user selects → call create_booking immediately
 5. Confirm booking warmly
 
+PROPERTY NUMBER TO ID MAPPING
+When a client refers to properties by number — "property 1", "number 5", "the first and fifth one" — you must map these numbers to the exact UUIDs from the search results in this conversation. The search results show each property with a number and an ID like "id: 9d256fb1-...". Use that exact ID. Never invent IDs like "property1_id" or "property_one". If you cannot find the UUID for the property number the client mentioned, call search_properties again to retrieve the results.
+
 UNDERSTANDING SLOT SELECTION
 When a client picks a viewing time, they may say things like:
 - "second option" or "option 2"
@@ -537,11 +540,23 @@ context.savedInterest = toolInput.interest || context.savedInterest;
 
       const result = await tools.createBooking(bookingInput);
 
+      // Validate property ID is a real UUID — reject placeholders like "property1_id"
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!bookingInput.propertyId || !uuidPattern.test(bookingInput.propertyId)) {
+        console.error('Invalid property ID rejected:', bookingInput.propertyId);
+        return {
+          success: false,
+          error: `Invalid property ID "${bookingInput.propertyId}". You must use the exact UUID from the search results. Check the PROPERTIES ALREADY SHOWN section in your context.`
+        };
+      }
+
       if (result.success) {
+        context.completedBookings += 1;
         await tools.updateLead(context.leadId, {
           conversation_stage: 'booking_confirmed'
         });
         console.log('Stage updated to booking_confirmed');
+        console.log('Completed bookings this turn:', context.completedBookings);
       }
 
       return result;
@@ -616,7 +631,8 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     savedLocation: lead.location || null,
     savedSize: typeof lead.size === 'string' ? parseInt(lead.size, 10) || null : lead.size,
     savedBudget: lead.budget ? Number(lead.budget) : null,
-    savedInterest: lead.interest || null
+    savedInterest: lead.interest || null,
+    completedBookings: 0
   };
 
   console.log('Processing message for lead:', lead.id, '| Phone:', cleanPhone);
@@ -671,7 +687,7 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
 
   let finalText = null;
   let iterations = 0;
-  const MAX_ITERATIONS = 5;
+  const MAX_ITERATIONS = 10;
 
   while (iterations < MAX_ITERATIONS) {
     iterations++;
@@ -730,6 +746,18 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
       }
 
       messages.push({ role: 'user', content: toolResults });
+
+      // If multiple bookings completed this turn, force a final message
+      // This prevents hitting MAX_ITERATIONS without Claude getting to speak
+      if (context.completedBookings >= 2) {
+        console.log('Multiple bookings completed — forcing final confirmation message');
+        finalText =
+          `You are all set ${context.leadName || ''}! Both viewings are confirmed. ` +
+          `Your agent will be in touch with the details for each one. ` +
+          `Let me know if you need anything else!`;
+        break;
+      }
+
       continue;
     }
 
