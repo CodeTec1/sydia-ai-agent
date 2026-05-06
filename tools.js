@@ -87,7 +87,13 @@ async function updateLead(leadId, fields) {
     available_slots: 'available_slots',
     selected_property_id: 'selected_property_id',
     last_viewed_property: 'last_viewed_property',
-    awaiting_followup_response: 'awaiting_followup_response'
+    awaiting_followup_response: 'awaiting_followup_response',
+    purpose: 'purpose',
+    payment_method: 'payment_method',
+    timeline: 'timeline',
+    decision_maker: 'decision_maker',
+    client_type: 'client_type',
+    lead_source: 'lead_source'
   };
 
   for (const [key, value] of Object.entries(fields)) {
@@ -876,6 +882,76 @@ async function saveMessage(leadId, role, content) {
 }
 
 // ============================================
+// TOOL: Escalate to Agent
+// ============================================
+
+async function escalateToAgent(leadId, reason) {
+  console.log('Escalating to agent for lead:', leadId, '| Reason:', reason);
+
+  try {
+    const { data: lead } = await supabase
+      .from('leads')
+      .select('name, phone, interest, budget, location, size, notes')
+      .eq('id', leadId)
+      .single();
+
+    const { data: agent } = await supabase
+      .from('agents')
+      .select('agent_name, phone')
+      .eq('tenant_id', TENANT_ID)
+      .eq('active', true)
+      .single();
+
+    if (!agent?.phone) {
+      console.error('No active agent found for escalation');
+      return { success: false, error: 'No agent available' };
+    }
+
+    const clientName = lead?.name || 'Unknown';
+    const clientPhone = lead?.phone?.replace('whatsapp:', '').trim() || 'N/A';
+    const budget = lead?.budget ? `KES ${Number(lead.budget).toLocaleString()}` : 'N/A';
+    const location = lead?.location || 'N/A';
+    const size = lead?.size || 'N/A';
+    const interest = lead?.interest || 'N/A';
+    const notes = lead?.notes || 'No previous notes';
+
+    const agentWhatsApp = agent.phone.startsWith('whatsapp:')
+      ? agent.phone
+      : `whatsapp:${agent.phone}`;
+
+    const message =
+      `New client handoff from Nina.\n\n` +
+      `Client: ${clientName}\n` +
+      `Phone: ${clientPhone}\n` +
+      `Interest: ${interest}\n` +
+      `Location: ${location}\n` +
+      `Size: ${size}\n` +
+      `Budget: ${budget}\n` +
+      `Reason: ${reason}\n` +
+      `Previous context: ${notes}`;
+
+    await twilioClient.messages.create({
+      from: SYDIA_WHATSAPP,
+      to: agentWhatsApp,
+      body: message
+    });
+
+    console.log('Agent notified of escalation:', agent.phone);
+
+    await supabase
+      .from('leads')
+      .update({ status: 'Contacted', conversation_stage: 'escalated' })
+      .eq('id', leadId);
+
+    return { success: true, agentName: agent.agent_name };
+
+  } catch (err) {
+    console.error('Escalation error:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+// ============================================
 // Generate session summary using Claude
 // ============================================
 async function generateSessionSummary(conversationHistory) {
@@ -935,5 +1011,6 @@ module.exports = {
   createBooking,
   cancelBooking,
   getConversationHistory,
-  saveMessage
+  saveMessage,
+  escalateToAgent
 };
