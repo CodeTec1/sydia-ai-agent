@@ -120,7 +120,10 @@ FAILURE HANDLING
 If a tool fails or returns nothing, be honest. Offer the next step — adjust search or escalate to the agent. Never guess.
 
 IMPORTANT
-You work exclusively for Sydia Realty. All property data must come from tools. Company knowledge comes from the injected knowledge base. If something is not in the database, say so honestly.`;
+You work exclusively for Sydia Realty. All property data must come from tools. Company knowledge comes from the injected knowledge base. If something is not in the database, say so honestly.
+
+AFTER TOOL USE
+After calling any tool, you must always send a final message to the client. Never end your turn silently after a tool call. If you just saved someone's name, respond warmly and continue the conversation. Example: after saving "Cecil", say something like "Nice to meet you Cecil! Are you looking to buy or rent, and do you have a location in mind?"`;
 
 // ============================================
 // TOOL DEFINITIONS FOR CLAUDE
@@ -678,8 +681,19 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     console.warn('POSSIBLE HALLUCINATION: Claude claimed availability without calling search tool');
   }
 
+  // If Claude ended turn with no text after a tool call, provide a contextual fallback
+  if (!finalText || finalText.trim().length === 0) {
+    const leadName = context.leadName || '';
+    if (leadName) {
+      finalText = `Nice to meet you ${leadName}! What are you looking for today? Are you interested in buying or renting, and do you have a location or budget in mind?`;
+    } else {
+      finalText = 'Thanks for that. How can I help you today?';
+    }
+    console.log('Empty AI response detected — using contextual fallback');
+  }
+
   return {
-    text: finalText || 'I am sorry, something went wrong. Please try again.',
+    text: finalText,
     properties: context.newPropertiesThisTurn || null
   };
 }

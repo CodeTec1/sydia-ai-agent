@@ -30,6 +30,10 @@ cron.schedule('0 * * * *', async () => {
   await runNotifications();
 });
 
+app.get('/', (req, res) => {
+  res.status(200).send('Sydia AI Agent is running');
+});
+
 app.get('/api/run-notifications', async (req, res) => {
   const secret = req.headers['x-cron-secret'];
   if (secret !== process.env.CRON_SECRET) {
