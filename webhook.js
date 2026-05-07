@@ -5,6 +5,15 @@ const twilio = require('twilio');
 const { processMessage } = require('./aiAgent');
 const tools = require('./tools');
 
+// In-memory deduplication for Twilio webhook retries
+const processedMessages = new Set();
+
+// Per-user processing lock
+const activeUsers = new Set();
+
+// Clear old entries every hour to prevent memory growth
+setInterval(() => processedMessages.clear(), 60 * 60 * 1000);
+
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
@@ -42,8 +51,27 @@ router.post('/', async (req, res) => {
   const from = req.body.From;
   const userMessage = req.body.Body?.trim();
 
-  if (!from || !userMessage) {
+  if (!from) {
     return res.status(200).send('<Response></Response>');
+  }
+
+  const messageSid = req.body.MessageSid;
+  if (messageSid && processedMessages.has(messageSid)) {
+    console.log('Duplicate webhook ignored:', messageSid);
+    return res.status(200).send('<Response></Response>');
+  }
+  if (messageSid) processedMessages.add(messageSid);
+
+  if (!userMessage) {
+    if (req.body.NumMedia > 0) {
+      // User sent a voice note or image — respond politely
+      const mediaFrom = from;
+      res.status(200).send('<Response></Response>');
+      await sendMessage(mediaFrom, 'Hi! I can only read text messages right now. Please type your question and I will be happy to help.');
+    } else {
+      res.status(200).send('<Response></Response>');
+    }
+    return;
   }
 
   //  spam protection
@@ -64,6 +92,14 @@ router.post('/', async (req, res) => {
       await sendMessage(from, 'Welcome to Sydia Realty! Please try again.');
       return;
     }
+
+    // Prevent multiple simultaneous requests from same user
+if (activeUsers.has(from)) {
+  console.log('User already processing, skipping:', from);
+  return;
+}
+
+activeUsers.add(from);
 
     console.log('Lead ID:', lead.id, '| Name:', lead.name || 'Unknown');
 
@@ -86,9 +122,15 @@ router.post('/', async (req, res) => {
 
         // Save summary to lead notes for future sessions
         if (sessionSummary) {
+          const existingNotes = lead.notes || '';
+          const timestamp = new Date().toLocaleDateString('en-KE');
+          const combinedNotes = existingNotes
+            ? `${existingNotes}\n\n--- Session ${timestamp} ---\n${sessionSummary}`
+            : sessionSummary;
+
           await supabase
             .from('leads')
-            .update({ notes: sessionSummary })
+            .update({ notes: combinedNotes })
             .eq('id', lead.id);
         }
 
@@ -145,8 +187,13 @@ router.post('/', async (req, res) => {
     console.log('Properties found:', properties?.length || 0);
 
     const cleanResponse = sanitizeForWhatsApp(aiResponse);
-    await tools.saveMessage(lead.id, 'assistant', cleanResponse);
-    await sendMessage(from, cleanResponse);
+
+    const truncatedResponse = cleanResponse.length > 1500
+      ? cleanResponse.slice(0, 1497) + '...'
+      : cleanResponse;
+
+    await tools.saveMessage(lead.id, 'assistant', truncatedResponse);
+    await sendMessage(from, truncatedResponse);
 
     if (properties && properties.length > 0) {
       await delay(2000);
@@ -220,7 +267,9 @@ router.post('/', async (req, res) => {
     } catch (sendErr) {
       console.error('Could not send error message:', sendErr.message);
     }
-  }
+  } finally {
+  activeUsers.delete(from);
+}
 });
 
 module.exports = router;

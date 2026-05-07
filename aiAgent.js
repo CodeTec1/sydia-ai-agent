@@ -285,6 +285,13 @@ const TOOL_DEFINITIONS = [
 // EXECUTE TOOL CALL
 // ============================================
 async function executeTool(toolName, toolInput, context) {
+  context.toolCallsThisTurn += 1;
+
+  if (context.toolCallsThisTurn > 6) {
+    console.warn('Tool call limit reached — forcing stop');
+    return { error: 'Too many tool calls in one turn. Please ask the client to clarify their request.' };
+  }
+  
   console.log(`Tool called: ${toolName}`);
 
   switch (toolName) {
@@ -476,7 +483,12 @@ function buildClientProfile(lead, sessionSummary) {
 
   if (lead.interest) profile += `Interest: ${lead.interest}\n`;
   if (lead.location) profile += `Location: ${lead.location}\n`;
-  if (lead.budget) profile += `Budget: KES ${Number(lead.budget).toLocaleString()}\n`;
+  if (lead.budget) {
+    const budgetNum = Number(lead.budget);
+    if (!isNaN(budgetNum) && budgetNum > 0) {
+      profile += `Previous budget: KES ${budgetNum.toLocaleString()}\n`;
+    }
+  }
   if (lead.size) profile += `Size preference: ${lead.size}\n`;
   if (lead.status) profile += `Status: ${lead.status}\n`;
   if (lead.conversation_stage) profile += `Current stage: ${lead.conversation_stage}\n`;
@@ -511,7 +523,8 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     savedSize: typeof lead.size === 'string' ? parseInt(lead.size, 10) || null : lead.size,
     savedBudget: lead.budget ? Number(lead.budget) : null,
     savedInterest: lead.interest || null,
-    completedBookings: 0
+    completedBookings: 0,
+    toolCallsThisTurn: 0
   };
 
   console.log('Processing message for lead:', lead.id, '| Phone:', cleanPhone);
@@ -547,8 +560,13 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
   // Build client profile from database — this is Claude's long term memory
   const clientProfile = buildClientProfile(lead, sessionSummary);
 
+  const safeHistory = Array.isArray(conversationHistory) ? conversationHistory : [];
+
   const messages = [
-    ...conversationHistory.map(h => ({ role: h.role, content: h.content })),
+    ...safeHistory.map(h => ({
+      role: h.role,
+      content: typeof h.content === 'string' ? h.content : JSON.stringify(h.content)
+    })),
     { role: 'user', content: userMessage }
   ];
 
@@ -587,6 +605,12 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     }
 
     console.log('Stop reason:', response.stop_reason);
+
+    if (!response || !Array.isArray(response.content)) {
+      console.error('Unexpected API response structure:', JSON.stringify(response));
+      break;
+    }
+
     console.log('Content blocks:', response.content.map(b => b.type).join(', '));
 
     if (response.stop_reason === 'end_turn') {

@@ -410,6 +410,15 @@ async function getAvailableSlots(propertyId) {
     .eq('id', TENANT_ID)
     .single();
 
+  const workStart = Number(tenant.work_start_hour);
+  const workEnd = Number(tenant.work_end_hour);
+  const slotDuration = Number(tenant.slot_duration);
+
+  if (isNaN(workStart) || isNaN(workEnd) || isNaN(slotDuration)) {
+    console.error('Invalid tenant configuration:', tenant);
+    return { slots: [], slotMap: {}, count: 0, error: 'Invalid tenant configuration' };
+  }
+
   const calendarId = process.env.SYDIA_CALENDAR_ID || tenant.google_calendar_id;
   const workStart = parseInt(tenant.work_start_hour || 9);
   const workEnd = parseInt(tenant.work_end_hour || 17);
@@ -600,6 +609,26 @@ async function createBooking({ leadId, propertyId, slotNumber, slotMap, leadName
     if (conflicts && conflicts.length > 0) {
       console.log('Slot conflict detected');
       return { success: false, slotTaken: true, error: 'That slot is already taken' };
+    }
+
+    // Check for duplicate — same lead booking same property same day
+    const bookingDate = slotStart.toISOString().split('T')[0];
+    const { data: existingBooking } = await supabase
+      .from('bookings')
+      .select('id')
+      .eq('lead_id', leadId)
+      .eq('property_id', propertyId)
+      .eq('date', bookingDate)
+      .neq('status', 'Cancelled')
+      .limit(1);
+
+    if (existingBooking && existingBooking.length > 0) {
+      console.log('Duplicate booking prevented for lead:', leadId, 'property:', propertyId);
+      return {
+        success: false,
+        duplicate: true,
+        error: 'A booking already exists for this property on this date.'
+      };
     }
 
     // Get property details
