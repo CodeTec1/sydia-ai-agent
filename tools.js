@@ -420,9 +420,6 @@ async function getAvailableSlots(propertyId) {
   }
 
   const calendarId = process.env.SYDIA_CALENDAR_ID || tenant.google_calendar_id;
-  const workStart = parseInt(tenant.work_start_hour || 9);
-  const workEnd = parseInt(tenant.work_end_hour || 17);
-  const slotDuration = parseInt(tenant.slot_duration || 60);
   const timezone = tenant.timezone || 'Africa/Nairobi';
   const daysAhead = parseInt(tenant.days_ahead || 30);
   const workingDaysStr = tenant.working_days || 'Monday,Tuesday,Wednesday,Thursday,Friday';
