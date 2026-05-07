@@ -45,8 +45,3 @@ app.get('/api/run-notifications', async (req, res) => {
   }
 });
 
-app.get('/api/run-notifications', async (req, res) => {
-  const { runNotifications } = require('./notifications');
-  await runNotifications();
-  res.json({ success: true });
-});
