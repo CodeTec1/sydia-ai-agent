@@ -108,7 +108,10 @@ async function updateLead(leadId, fields) {
   }
 
   console.log('Mapped update fields:', JSON.stringify(mapped));
-const { data, error } = await supabase
+
+  mapped['updated_at'] = new Date().toISOString();
+
+  const { data, error } = await supabase
     .from('leads')
     .update(mapped)
     .eq('id', leadId)

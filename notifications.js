@@ -205,7 +205,7 @@ async function markCompletedBookings() {
 
   const { data: pastBookings, error } = await supabase
     .from('bookings')
-    .select('id')
+    .select('id, lead_id')
     .eq('tenant_id', TENANT_ID)
     .eq('status', 'Scheduled')
     .lt('end_datetime', now.toISOString());
@@ -215,16 +215,39 @@ async function markCompletedBookings() {
     return;
   }
 
-  if (!pastBookings || pastBookings.length === 0) return;
+  if (!pastBookings || pastBookings.length === 0) {
+    console.log('No bookings to mark completed');
+    return;
+  }
 
   const ids = pastBookings.map(b => b.id);
+  const leadIds = [...new Set(pastBookings.map(b => b.lead_id))];
 
+  // Mark bookings as Completed
   await supabase
     .from('bookings')
     .update({ status: 'Completed' })
     .in('id', ids);
 
-  console.log(`Marked ${ids.length} bookings as Completed`);
+  // Update lead status from Booked to Contacted
+  // Only update leads that are still showing Booked
+  // Do not overwrite Hot Lead, Deal Closed, or other meaningful statuses
+  for (const leadId of leadIds) {
+    const { data: lead } = await supabase
+      .from('leads')
+      .select('status')
+      .eq('id', leadId)
+      .single();
+
+    if (lead?.status === 'Booked') {
+      await supabase
+        .from('leads')
+        .update({ status: 'Contacted' })
+        .eq('id', leadId);
+    }
+  }
+
+  console.log(`Marked ${ids.length} bookings as Completed, updated ${leadIds.length} lead statuses`);
 }
 
 // ============================================
