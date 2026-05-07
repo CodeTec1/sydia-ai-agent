@@ -672,7 +672,7 @@ async function createBooking({ leadId, propertyId, slotNumber, slotMap, leadName
     console.log('Agent:', agentName, agentPhone);
 
     // Create Google Calendar event
-    const bookingDate = slotStart.toLocaleDateString('en-KE', { timeZone: timezone });
+    const bookingDateFormatted = slotStart.toLocaleDateString('en-KE', { timeZone: timezone });
     const bookingTime = slotStart.toLocaleTimeString('en-KE', {
       timeZone: timezone,
       hour: 'numeric',
