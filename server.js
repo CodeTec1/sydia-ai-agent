@@ -31,12 +31,16 @@ cron.schedule('0 * * * *', async () => {
 });
 
 app.get('/api/run-notifications', async (req, res) => {
+  const secret = req.headers['x-cron-secret'];
+  if (secret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
   try {
     const { runNotifications } = require('./notifications');
     await runNotifications();
     res.json({ success: true, timestamp: new Date().toISOString() });
   } catch (err) {
+    console.error('Notification run error:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
