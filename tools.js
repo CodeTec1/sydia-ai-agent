@@ -924,17 +924,19 @@ async function escalateToAgent(leadId, reason) {
       .eq('id', leadId)
       .single();
 
-    const { data: agent } = await supabase
-      .from('agents')
-      .select('agent_name, phone')
-      .eq('tenant_id', TENANT_ID)
-      .eq('active', true)
-      .single();
+    const { data: agent, error: agentError } = await supabase
+    .from('agents')
+    .select('agent_name, phone')
+    .eq('tenant_id', TENANT_ID)
+    .eq('active', true)
+    .maybeSingle();
 
-    if (!agent?.phone) {
-      console.error('No active agent found for escalation');
-      return { success: false, error: 'No agent available' };
-    }
+  console.log('Agent query result:', JSON.stringify(agent), 'Error:', agentError?.message);
+
+  if (!agent?.phone) {
+    console.error('No active agent found. tenant_id:', TENANT_ID);
+    return { success: false, error: 'No agent available' };
+  }
 
     const clientName = lead?.name || 'Unknown';
     const clientPhone = lead?.phone?.replace('whatsapp:', '').trim() || 'N/A';

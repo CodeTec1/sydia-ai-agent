@@ -140,7 +140,8 @@ activeUsers.add(from);
           .update({
             search_results: null,
             available_slots: null,
-            selected_property_id: null
+            selected_property_id: null,
+            conversation_stage: null
           })
           .eq('id', lead.id);
 

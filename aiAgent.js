@@ -575,9 +575,7 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
 
   // Inject current property context so Claude never needs to re-search for IDs
   let propertyContext = '';
-  if (['properties_shown', 'selecting_slot', 'booking_confirmed'].includes(lead.conversation_stage)) {
-    
-    // Load the last known property from lead
+  if (['selecting_slot', 'booking_confirmed'].includes(lead.conversation_stage)) {
     if (lead.selected_property_id) {
       propertyContext = `\n\nCURRENT SELECTED PROPERTY:\nProperty ID: ${lead.selected_property_id}\nUse this ID directly for get_available_slots and create_booking. Do not call search_properties again.`;
     }
