@@ -315,8 +315,7 @@ async function executeTool(toolName, toolInput, context) {
         toolInput.budget || null
       );
     }
-
-    case 'search_properties': {
+case 'search_properties': {
       const result = await tools.searchProperties(toolInput);
 
       if (result.properties && result.properties.length > 0) {
@@ -332,7 +331,12 @@ async function executeTool(toolName, toolInput, context) {
         const savedBudget = context.savedBudget;
         const savedInterest = context.savedInterest?.toLowerCase().trim();
 
-        const locationChanged = incomingLocation && savedLocation && incomingLocation !== savedLocation;
+        // For multi-location searches, location "changed" only if it is a genuinely new search
+        // not just a second location in the same turn
+        // Use includes check so "Kilimani" does not reset when already searched "Westlands"
+        const locationChanged = incomingLocation && savedLocation &&
+          incomingLocation !== savedLocation &&
+          !savedLocation.includes(incomingLocation);
         const bedroomsChanged = incomingBedrooms !== undefined && savedBedrooms !== null && incomingBedrooms !== savedBedrooms;
         const budgetChanged = incomingBudget !== undefined && savedBudget !== null && incomingBudget !== savedBudget;
         const interestChanged = incomingInterest && savedInterest && incomingInterest !== savedInterest;
@@ -340,27 +344,40 @@ async function executeTool(toolName, toolInput, context) {
         if (locationChanged || bedroomsChanged || budgetChanged || interestChanged) {
           console.log('Search criteria changed — resetting propertiesAlreadySent');
           context.propertiesAlreadySent = false;
+          // Also reset accumulated properties on genuine new search
+          context.newPropertiesThisTurn = null;
         }
 
-        // Only send cards on fresh search
+        // Accumulate properties — never overwrite for multi-location searches
         if (!context.propertiesAlreadySent) {
-          context.newPropertiesThisTurn = result.properties;
+          if (!context.newPropertiesThisTurn) {
+            // First search this turn — start fresh
+            context.newPropertiesThisTurn = result.properties;
+          } else {
+            // Additional location in same turn — accumulate with correct numbering
+            const startNumber = context.newPropertiesThisTurn.length + 1;
+            const renumbered = result.properties.map((p, i) => ({
+              ...p,
+              number: startNumber + i
+            }));
+            context.newPropertiesThisTurn = [...context.newPropertiesThisTurn, ...renumbered];
+          }
           context.propertiesAlreadySent = true;
-          console.log('Fresh search — property cards will be sent');
+          console.log(`Fresh search — total properties this turn: ${context.newPropertiesThisTurn.length}`);
         } else {
           console.log('Properties already sent this session — skipping resend');
         }
 
         // Always store found IDs so Claude can use them
-        context.foundPropertyIds = result.properties.map(p => ({
+        context.foundPropertyIds = (context.newPropertiesThisTurn || result.properties).map(p => ({
           number: p.number,
           id: p.id,
           name: p.name
         }));
 
-        // Auto-select if single result
-        if (result.properties.length === 1) {
-          context.currentPropertyId = result.properties[0].id;
+        // Auto-select if single result overall
+        if (context.newPropertiesThisTurn?.length === 1) {
+          context.currentPropertyId = context.newPropertiesThisTurn[0].id;
           console.log('Single property auto-selected:', context.currentPropertyId);
         }
 
@@ -375,11 +392,10 @@ async function executeTool(toolName, toolInput, context) {
         await tools.updateLead(context.leadId, preferencesToSave);
 
         // Update context to reflect latest search
-context.savedLocation = toolInput.location || context.savedLocation;
-context.savedSize = toolInput.bedrooms !== undefined ? toolInput.bedrooms : context.savedSize;
-context.savedBudget = toolInput.budget !== undefined ? toolInput.budget : context.savedBudget;
-context.savedInterest = toolInput.interest || context.savedInterest;
-
+        context.savedLocation = toolInput.location || context.savedLocation;
+        context.savedSize = toolInput.bedrooms !== undefined ? toolInput.bedrooms : context.savedSize;
+        context.savedBudget = toolInput.budget !== undefined ? toolInput.budget : context.savedBudget;
+        context.savedInterest = toolInput.interest || context.savedInterest;
       }
 
       return result;
