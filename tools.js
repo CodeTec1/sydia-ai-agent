@@ -93,6 +93,9 @@ async function updateLead(leadId, fields) {
     timeline: 'timeline',
     decision_maker: 'decision_maker',
     client_type: 'client_type',
+    property_snapshot: 'property_snapshot',
+    search_fingerprints: 'search_fingerprints',
+    found_property_ids: 'found_property_ids',
     lead_source: 'lead_source'
   };
 

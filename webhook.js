@@ -95,7 +95,13 @@ router.post('/', async (req, res) => {
 
     // Prevent multiple simultaneous requests from same user
 if (activeUsers.has(from)) {
-  console.log('User already processing, skipping:', from);
+  console.log('User already processing:', from);
+
+  await sendMessage(
+    from,
+    'Just a moment — I am still processing your previous message.'
+  );
+
   return;
 }
 
@@ -105,7 +111,6 @@ activeUsers.add(from);
 
     let history = await tools.getConversationHistory(lead.id);
     let sessionSummary = null;
-    const previousNotes = lead.notes || null;
 
     // Detect new session — more than 6 hours since last message
     if (history.length > 0) {
@@ -134,14 +139,17 @@ activeUsers.add(from);
             .eq('id', lead.id);
         }
 
-        // Clear session data from lead — temporary data, not long term memory
+                // Clear session data from lead — temporary data, not long term memory
         await supabase
           .from('leads')
           .update({
             search_results: null,
             available_slots: null,
             selected_property_id: null,
-            conversation_stage: null
+            conversation_stage: null,
+            property_snapshot: null,
+            search_fingerprints: null,
+            found_property_ids: null
           })
           .eq('id', lead.id);
 
@@ -149,6 +157,10 @@ activeUsers.add(from);
         lead.search_results = null;
         lead.available_slots = null;
         lead.selected_property_id = null;
+        lead.conversation_stage = null;
+        lead.property_snapshot = null;
+        lead.search_fingerprints = null;
+        lead.found_property_ids = null;
 
         // Clear conversation history for fresh session
         await tools.clearConversationHistory(lead.id);

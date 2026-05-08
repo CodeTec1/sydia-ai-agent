@@ -315,81 +315,214 @@ async function executeTool(toolName, toolInput, context) {
         toolInput.budget || null
       );
     }
-case 'search_properties': {
-      const result = await tools.searchProperties(toolInput);
+    
+   
+    case 'search_properties': {
+  // Normalize inputs
+  const normalizedInterest =
+    toolInput.interest?.toLowerCase().trim() || 'any';
 
-      if (result.properties && result.properties.length > 0) {
+  const normalizedLocation =
+    toolInput.location?.toLowerCase().trim() || 'any';
 
-        // If this is an active session (properties already shown before),
-        // only allow new results if the user explicitly asked for different criteria
-        // We detect this by checking if the search intent differs from what was previously saved
-        if (context.isActiveSession) {
-          const incomingLocation = toolInput.location?.toLowerCase().trim();
-          const incomingBedrooms = toolInput.bedrooms;
-          const incomingInterest = toolInput.interest?.toLowerCase().trim();
+  const normalizedBedrooms =
+    toolInput.bedrooms ?? 'any';
 
-          const savedLocation = context.savedLocation?.toLowerCase().trim();
-          const savedBedrooms = context.savedSize;
-          const savedInterest = context.savedInterest?.toLowerCase().trim();
+  const normalizedBudget =
+    toolInput.budget != null && !isNaN(Number(toolInput.budget))
+      ? Number(toolInput.budget)
+      : 'any';
 
-          const criteriaChanged =
-            (incomingInterest && savedInterest && incomingInterest !== savedInterest) ||
-            (incomingBedrooms !== undefined && savedBedrooms !== null && incomingBedrooms !== savedBedrooms);
+  // =====================================================
+  // RESET LOGIC
+  // Only reset on MAJOR search intent changes.
+  // Location changes are allowed to accumulate.
+  // =====================================================
 
-          if (!criteriaChanged) {
-            // Same criteria as before — accumulate for re-send but mark as resend
-            console.log('Re-search with same criteria — accumulating for re-send');
-            context.isActiveSession = false; // Allow this re-send
-          }
-        }
+  const interestChanged =
+    context.savedInterest &&
+    normalizedInterest !== context.savedInterest.toLowerCase().trim();
 
-        // ALWAYS accumulate — never overwrite
-        // Deduplicate by ID to handle multi-location searches cleanly
-        const existingIds = new Set(context.newPropertiesThisTurn.map(p => p.id));
+  const bedroomChanged =
+    context.savedSize !== null &&
+    normalizedBedrooms !== 'any' &&
+    normalizedBedrooms !== context.savedSize;
 
-        const newOnes = result.properties
-          .filter(p => !existingIds.has(p.id))
-          .map((p, i) => ({
-            ...p,
-            number: context.newPropertiesThisTurn.length + i + 1
-          }));
+  const shouldReset =
+    (interestChanged || bedroomChanged) &&
+    context.newPropertiesThisTurn.length > 0;
 
-        context.newPropertiesThisTurn.push(...newOnes);
+  if (shouldReset) {
+    console.log('Major search intent changed — resetting snapshot');
 
-        console.log(`Accumulated ${newOnes.length} new properties. Total this turn: ${context.newPropertiesThisTurn.length}`);
+    // Clear DB FIRST
+    await tools.updateLead(context.leadId, {
+      property_snapshot: JSON.stringify([]),
+      found_property_ids: JSON.stringify([]),
+      search_fingerprints: JSON.stringify([])
+    });
 
-        // Auto-select if only one property total
-        if (context.newPropertiesThisTurn.length === 1) {
-          context.currentPropertyId = context.newPropertiesThisTurn[0].id;
-          console.log('Single property auto-selected:', context.currentPropertyId);
-        }
+    // Then clear memory
+    context.newPropertiesThisTurn = [];
+    context.foundPropertyIds = [];
+    context.searchFingerprintSet = new Set();
+    context.newlyAddedProperties = [];
+  }
 
-        // Update foundPropertyIds from full accumulated list
-        context.foundPropertyIds = context.newPropertiesThisTurn.map(p => ({
+  // =====================================================
+  // FINGERPRINT
+  // =====================================================
+
+  const fingerprint =
+    `${normalizedInterest}-${normalizedLocation}-${normalizedBedrooms}-${normalizedBudget}`;
+
+  // =====================================================
+  // SNAPSHOT HIT
+  // =====================================================
+
+  if (
+    context.searchFingerprintSet.has(fingerprint) &&
+    context.newPropertiesThisTurn.length > 0
+  ) {
+    console.log(`Fingerprint hit: ${fingerprint}`);
+    console.log(
+      `Returning snapshot with ${context.newPropertiesThisTurn.length} properties`
+    );
+
+    return {
+      properties: context.newPropertiesThisTurn,
+      count: context.newPropertiesThisTurn.length,
+      fromSnapshot: true
+    };
+  }
+
+  // =====================================================
+  // NEW SEARCH
+  // =====================================================
+
+  const result = await tools.searchProperties(toolInput);
+
+  if (result.properties && result.properties.length > 0) {
+    // Mark fingerprint as searched
+    context.searchFingerprintSet.add(fingerprint);
+
+    // Existing IDs for deduplication
+    const existingIds = new Set(
+      context.newPropertiesThisTurn.map(p => p.id)
+    );
+
+    // Deduplicate and renumber
+    const newOnes = result.properties
+      .filter(p => !existingIds.has(p.id))
+      .map((p, i) => ({
+        ...p,
+        number: context.newPropertiesThisTurn.length + i + 1
+      }));
+
+    // Accumulate
+    if (newOnes.length > 0) {
+      context.newPropertiesThisTurn.push(...newOnes);
+      context.newlyAddedProperties.push(...newOnes);
+
+      console.log(
+        `Added ${newOnes.length} new properties. Total snapshot: ${context.newPropertiesThisTurn.length}`
+      );
+    }
+
+    // Auto-select if only one property exists
+    if (context.newPropertiesThisTurn.length === 1) {
+      context.currentPropertyId =
+        context.newPropertiesThisTurn[0].id;
+
+      console.log(
+        'Single property auto-selected:',
+        context.currentPropertyId
+      );
+    }
+
+    // Stable property reference map
+    context.foundPropertyIds =
+      context.newPropertiesThisTurn.map(p => ({
+        number: p.number,
+        id: p.id,
+        name: p.name
+      }));
+
+    // Debug logging
+    console.log(
+      'SNAPSHOT STATE:',
+      JSON.stringify(
+        context.newPropertiesThisTurn.map(p => ({
           number: p.number,
           id: p.id,
-          name: p.name
-        }));
+          name: p.name,
+          location: p.location
+        }))
+      )
+    );
 
-        // Save preferences
-        const preferencesToSave = {};
-        if (toolInput.interest) preferencesToSave.interest = toolInput.interest;
-        if (toolInput.location) preferencesToSave.location = toolInput.location;
-        if (toolInput.bedrooms !== undefined) preferencesToSave.size = `${toolInput.bedrooms} bedroom`;
-        if (toolInput.budget) preferencesToSave.budget = toolInput.budget.toString();
-        preferencesToSave.conversation_stage = 'properties_shown';
+    // Persist snapshot
+    const preferencesToSave = {
+      conversation_stage: 'properties_shown',
+      property_snapshot: JSON.stringify(
+        context.newPropertiesThisTurn
+      ),
+      found_property_ids: JSON.stringify(
+        context.foundPropertyIds
+      ),
+      search_fingerprints: JSON.stringify([
+        ...context.searchFingerprintSet
+      ])
+    };
 
-        await tools.updateLead(context.leadId, preferencesToSave);
-
-        // Update context saved state
-        context.savedLocation = toolInput.location || context.savedLocation;
-        context.savedSize = toolInput.bedrooms !== undefined ? toolInput.bedrooms : context.savedSize;
-        context.savedBudget = toolInput.budget !== undefined ? toolInput.budget : context.savedBudget;
-        context.savedInterest = toolInput.interest || context.savedInterest;
-      }
-
-      return result;
+    // Save lead preferences
+    if (toolInput.interest) {
+      preferencesToSave.interest = toolInput.interest;
     }
+
+    if (toolInput.location) {
+      preferencesToSave.location = toolInput.location;
+    }
+
+    if (toolInput.bedrooms !== undefined) {
+      preferencesToSave.size =
+        `${toolInput.bedrooms} bedroom`;
+    }
+
+    if (toolInput.budget) {
+      preferencesToSave.budget =
+        toolInput.budget.toString();
+    }
+
+    await tools.updateLead(
+      context.leadId,
+      preferencesToSave
+    );
+
+    // Update saved state
+    context.savedLocation =
+      toolInput.location || context.savedLocation;
+
+    context.savedSize =
+      toolInput.bedrooms !== undefined
+        ? toolInput.bedrooms
+        : context.savedSize;
+
+    context.savedBudget =
+      toolInput.budget !== undefined
+        ? toolInput.budget
+        : context.savedBudget;
+
+    context.savedInterest =
+      toolInput.interest || context.savedInterest;
+  }
+
+  // Always return the full stable snapshot
+  return {
+    properties: context.newPropertiesThisTurn,
+    count: context.newPropertiesThisTurn.length
+  };
+}
 
     case 'get_available_slots': {
   const result = await tools.getAvailableSlots(toolInput.propertyId);
@@ -442,17 +575,28 @@ case 'search_properties': {
         return { success: false, error: 'No slot map available. Please get available slots first.' };
       }
 
-      const result = await tools.createBooking(bookingInput);
+      // Validate property ID BEFORE booking
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-      // Validate property ID is a real UUID — reject placeholders like "property1_id"
-      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (!bookingInput.propertyId || !uuidPattern.test(bookingInput.propertyId)) {
-        console.error('Invalid property ID rejected:', bookingInput.propertyId);
-        return {
-          success: false,
-          error: `Invalid property ID "${bookingInput.propertyId}". You must use the exact UUID from the search results. Check the PROPERTIES ALREADY SHOWN section in your context.`
-        };
-      }
+if (
+  !bookingInput.propertyId ||
+  !uuidPattern.test(bookingInput.propertyId)
+) {
+  console.error(
+    'Invalid property ID rejected:',
+    bookingInput.propertyId
+  );
+
+  return {
+    success: false,
+    error:
+      `Invalid property ID "${bookingInput.propertyId}". ` +
+      `You must use the exact UUID from the search results.`
+  };
+}
+
+const result = await tools.createBooking(bookingInput);
 
       if (result.success) {
         context.completedBookings += 1;
@@ -534,15 +678,29 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
   const isActiveSession = ['properties_shown', 'selecting_slot', 'booking_confirmed']
     .includes(lead.conversation_stage);
 
+  // Load persisted snapshot from DB
+  let persistedSnapshot = [];
+  let persistedFingerprints = [];
+  let persistedFoundIds = [];
+
+  try {
+    if (lead.property_snapshot) persistedSnapshot = JSON.parse(lead.property_snapshot);
+    if (lead.search_fingerprints) persistedFingerprints = JSON.parse(lead.search_fingerprints);
+    if (lead.found_property_ids) persistedFoundIds = JSON.parse(lead.found_property_ids);
+  } catch (e) {
+    console.error('Failed to parse persisted snapshot:', e.message);
+  }
+
   const context = {
     leadId: lead.id,
     leadName: lead.name || null,
     leadPhone: cleanPhone,
     currentSlotMap: lead.available_slots || null,
     currentPropertyId: lead.selected_property_id || null,
-    newPropertiesThisTurn: [],  // Always start empty — accumulates during this message only
-    foundPropertyIds: [],
-    isActiveSession,             // True if properties were already shown in a previous message
+    newPropertiesThisTurn: [...persistedSnapshot],
+    foundPropertyIds: [...persistedFoundIds],
+    searchFingerprintSet: new Set(persistedFingerprints),
+    newlyAddedProperties: [],
     savedLocation: lead.location || null,
     savedSize: typeof lead.size === 'string' ? parseInt(lead.size, 10) || null : lead.size,
     savedBudget: lead.budget ? Number(lead.budget) : null,
@@ -692,11 +850,13 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
   console.log('AI final text:', finalText?.substring(0, 100));
   console.log('Tool called this turn:', context.newPropertiesThisTurn ? 'YES — properties found' : 'NO tool result');
 
-  if (finalText?.toLowerCase().includes('i found') && !context.newPropertiesThisTurn) {
+  if (
+  finalText?.toLowerCase().includes('i found') && context.newPropertiesThisTurn.length === 0) {
     console.warn('POSSIBLE HALLUCINATION: Claude claimed to find properties without calling search tool');
   }
 
-  if (finalText?.toLowerCase().includes('we have') && !context.newPropertiesThisTurn) {
+  if (
+  finalText?.toLowerCase().includes('we have') && context.newPropertiesThisTurn.length === 0) {
     console.warn('POSSIBLE HALLUCINATION: Claude claimed availability without calling search tool');
   }
 
@@ -713,9 +873,9 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
 
   return {
     text: finalText,
-    // Only send property cards if we accumulated new properties this turn
-    properties: context.newPropertiesThisTurn && context.newPropertiesThisTurn.length > 0
-      ? context.newPropertiesThisTurn
+    // Only send cards for newly added properties this turn
+    properties: context.newlyAddedProperties.length > 0
+      ? context.newlyAddedProperties
       : null
   };
 }
