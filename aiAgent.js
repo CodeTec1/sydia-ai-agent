@@ -320,68 +320,58 @@ case 'search_properties': {
 
       if (result.properties && result.properties.length > 0) {
 
-        // Detect if search criteria changed — if yes, allow cards to resend
-        const incomingLocation = toolInput.location?.toLowerCase().trim();
-        const incomingBedrooms = toolInput.bedrooms;
-        const incomingBudget = toolInput.budget;
-        const incomingInterest = toolInput.interest?.toLowerCase().trim();
+        // If this is an active session (properties already shown before),
+        // only allow new results if the user explicitly asked for different criteria
+        // We detect this by checking if the search intent differs from what was previously saved
+        if (context.isActiveSession) {
+          const incomingLocation = toolInput.location?.toLowerCase().trim();
+          const incomingBedrooms = toolInput.bedrooms;
+          const incomingInterest = toolInput.interest?.toLowerCase().trim();
 
-        const savedLocation = context.savedLocation?.toLowerCase().trim();
-        const savedBedrooms = context.savedSize;
-        const savedBudget = context.savedBudget;
-        const savedInterest = context.savedInterest?.toLowerCase().trim();
+          const savedLocation = context.savedLocation?.toLowerCase().trim();
+          const savedBedrooms = context.savedSize;
+          const savedInterest = context.savedInterest?.toLowerCase().trim();
 
-        // For multi-location searches, location "changed" only if it is a genuinely new search
-        // not just a second location in the same turn
-        // Use includes check so "Kilimani" does not reset when already searched "Westlands"
-        const locationChanged = incomingLocation && savedLocation &&
-          incomingLocation !== savedLocation &&
-          !savedLocation.includes(incomingLocation);
-        const bedroomsChanged = incomingBedrooms !== undefined && savedBedrooms !== null && incomingBedrooms !== savedBedrooms;
-        const budgetChanged = incomingBudget !== undefined && savedBudget !== null && incomingBudget !== savedBudget;
-        const interestChanged = incomingInterest && savedInterest && incomingInterest !== savedInterest;
+          const criteriaChanged =
+            (incomingInterest && savedInterest && incomingInterest !== savedInterest) ||
+            (incomingBedrooms !== undefined && savedBedrooms !== null && incomingBedrooms !== savedBedrooms);
 
-        if (locationChanged || bedroomsChanged || budgetChanged || interestChanged) {
-          console.log('Search criteria changed — resetting propertiesAlreadySent');
-          context.propertiesAlreadySent = false;
-          // Also reset accumulated properties on genuine new search
-          context.newPropertiesThisTurn = null;
-        }
-
-        // Accumulate properties — never overwrite for multi-location searches
-        if (!context.propertiesAlreadySent) {
-          if (!context.newPropertiesThisTurn) {
-            // First search this turn — start fresh
-            context.newPropertiesThisTurn = result.properties;
-          } else {
-            // Additional location in same turn — accumulate with correct numbering
-            const startNumber = context.newPropertiesThisTurn.length + 1;
-            const renumbered = result.properties.map((p, i) => ({
-              ...p,
-              number: startNumber + i
-            }));
-            context.newPropertiesThisTurn = [...context.newPropertiesThisTurn, ...renumbered];
+          if (!criteriaChanged) {
+            // Same criteria as before — accumulate for re-send but mark as resend
+            console.log('Re-search with same criteria — accumulating for re-send');
+            context.isActiveSession = false; // Allow this re-send
           }
-          context.propertiesAlreadySent = true;
-          console.log(`Fresh search — total properties this turn: ${context.newPropertiesThisTurn.length}`);
-        } else {
-          console.log('Properties already sent this session — skipping resend');
         }
 
-        // Always store found IDs so Claude can use them
-        context.foundPropertyIds = (context.newPropertiesThisTurn || result.properties).map(p => ({
+        // ALWAYS accumulate — never overwrite
+        // Deduplicate by ID to handle multi-location searches cleanly
+        const existingIds = new Set(context.newPropertiesThisTurn.map(p => p.id));
+
+        const newOnes = result.properties
+          .filter(p => !existingIds.has(p.id))
+          .map((p, i) => ({
+            ...p,
+            number: context.newPropertiesThisTurn.length + i + 1
+          }));
+
+        context.newPropertiesThisTurn.push(...newOnes);
+
+        console.log(`Accumulated ${newOnes.length} new properties. Total this turn: ${context.newPropertiesThisTurn.length}`);
+
+        // Auto-select if only one property total
+        if (context.newPropertiesThisTurn.length === 1) {
+          context.currentPropertyId = context.newPropertiesThisTurn[0].id;
+          console.log('Single property auto-selected:', context.currentPropertyId);
+        }
+
+        // Update foundPropertyIds from full accumulated list
+        context.foundPropertyIds = context.newPropertiesThisTurn.map(p => ({
           number: p.number,
           id: p.id,
           name: p.name
         }));
 
-        // Auto-select if single result overall
-        if (context.newPropertiesThisTurn?.length === 1) {
-          context.currentPropertyId = context.newPropertiesThisTurn[0].id;
-          console.log('Single property auto-selected:', context.currentPropertyId);
-        }
-
-        // Save preferences and mark stage
+        // Save preferences
         const preferencesToSave = {};
         if (toolInput.interest) preferencesToSave.interest = toolInput.interest;
         if (toolInput.location) preferencesToSave.location = toolInput.location;
@@ -391,7 +381,7 @@ case 'search_properties': {
 
         await tools.updateLead(context.leadId, preferencesToSave);
 
-        // Update context to reflect latest search
+        // Update context saved state
         context.savedLocation = toolInput.location || context.savedLocation;
         context.savedSize = toolInput.bedrooms !== undefined ? toolInput.bedrooms : context.savedSize;
         context.savedBudget = toolInput.budget !== undefined ? toolInput.budget : context.savedBudget;
@@ -402,22 +392,35 @@ case 'search_properties': {
     }
 
     case 'get_available_slots': {
-      const result = await tools.getAvailableSlots(toolInput.propertyId);
+  const result = await tools.getAvailableSlots(toolInput.propertyId);
 
-      if (result.slotMap) {
-        context.currentSlotMap = JSON.stringify(result.slotMap);
-        context.currentPropertyId = toolInput.propertyId;
+  if (result.slotMap) {
+    context.currentSlotMap = JSON.stringify(result.slotMap);
 
-        // Save to DB so next message knows which property is selected
-        await tools.updateLead(context.leadId, {
-          available_slots: JSON.stringify(result.slotMap),
-          selected_property_id: toolInput.propertyId,
-          conversation_stage: 'selecting_slot'
-        });
-      }
+    // IMPORTANT: verify against known properties in context
+    const validProperty = (context.newPropertiesThisTurn || [])
+      .find(p => p.id === toolInput.propertyId);
 
-      return result;
+    const updateFields = {
+      available_slots: JSON.stringify(result.slotMap)
+    };
+
+    if (validProperty) {
+      context.currentPropertyId = toolInput.propertyId;
+      updateFields.selected_property_id = toolInput.propertyId;
+      updateFields.conversation_stage = 'selecting_slot';
+    } else {
+      console.warn(
+        'Rejected invalid property selection:',
+        toolInput.propertyId
+      );
     }
+
+    await tools.updateLead(context.leadId, updateFields);
+  }
+
+  return result;
+}
 
     case 'create_booking': {
       const bookingInput = {
@@ -528,16 +531,18 @@ function buildClientProfile(lead, sessionSummary) {
 async function processMessage({ userMessage, lead, conversationHistory, sessionSummary }) {
   const cleanPhone = lead.phone?.replace('whatsapp:', '').trim();
 
+  const isActiveSession = ['properties_shown', 'selecting_slot', 'booking_confirmed']
+    .includes(lead.conversation_stage);
+
   const context = {
     leadId: lead.id,
     leadName: lead.name || null,
     leadPhone: cleanPhone,
     currentSlotMap: lead.available_slots || null,
     currentPropertyId: lead.selected_property_id || null,
-    newPropertiesThisTurn: null,
+    newPropertiesThisTurn: [],  // Always start empty — accumulates during this message only
     foundPropertyIds: [],
-    propertiesAlreadySent: ['properties_shown', 'selecting_slot', 'booking_confirmed']
-      .includes(lead.conversation_stage),
+    isActiveSession,             // True if properties were already shown in a previous message
     savedLocation: lead.location || null,
     savedSize: typeof lead.size === 'string' ? parseInt(lead.size, 10) || null : lead.size,
     savedBudget: lead.budget ? Number(lead.budget) : null,
@@ -708,7 +713,10 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
 
   return {
     text: finalText,
-    properties: context.newPropertiesThisTurn || null
+    // Only send property cards if we accumulated new properties this turn
+    properties: context.newPropertiesThisTurn && context.newPropertiesThisTurn.length > 0
+      ? context.newPropertiesThisTurn
+      : null
   };
 }
 
