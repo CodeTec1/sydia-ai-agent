@@ -3,7 +3,13 @@ const { google } = require('googleapis');
 
 const TENANT_ID = process.env.SYDIA_TENANT_ID;
 
-const credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT || '{}');
+let credentials = {};
+try {
+  credentials = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT || '{}');
+} catch (err) {
+  console.error('Invalid GOOGLE_SERVICE_ACCOUNT JSON — calendar features will not work');
+}
+
 const auth = new google.auth.GoogleAuth({
   credentials,
   scopes: ['https://www.googleapis.com/auth/calendar']
@@ -245,7 +251,9 @@ async function getAvailableOptions() {
 // TOOL: Get available locations
 // ============================================
 async function getLocations(interest) {
-  const normalized = interest.charAt(0).toUpperCase() + interest.slice(1).toLowerCase();
+  const normalized = interest
+    ? interest.charAt(0).toUpperCase() + interest.slice(1).toLowerCase()
+    : '';
 
   const { data } = await supabase
     .from('properties')
@@ -257,6 +265,7 @@ async function getLocations(interest) {
   if (!data || data.length === 0) return { locations: [] };
 
   const locations = [...new Set(data.map(r => r.location).filter(Boolean))].sort();
+
   return { locations };
 }
 
@@ -264,8 +273,12 @@ async function getLocations(interest) {
 // TOOL: Get bedroom options
 // ============================================
 async function getBedroomOptions(interest, location) {
-  const normalizedInterest = interest.charAt(0).toUpperCase() + interest.slice(1).toLowerCase();
-  const normalizedLocation = location.charAt(0).toUpperCase() + location.slice(1).toLowerCase();
+  const normalizedInterest = interest
+  ? interest.charAt(0).toUpperCase() + interest.slice(1).toLowerCase()
+  : '';
+const normalizedLocation = location
+  ? location.charAt(0).toUpperCase() + location.slice(1).toLowerCase()
+  : '';
 
   const { data } = await supabase
     .from('properties')
@@ -285,8 +298,12 @@ async function getBedroomOptions(interest, location) {
 // TOOL: Get completion dates
 // ============================================
 async function getCompletionDates(interest, location, bedrooms = null, budget = null) {
-  const normalizedInterest = interest.charAt(0).toUpperCase() + interest.slice(1).toLowerCase();
-  const normalizedLocation = location.charAt(0).toUpperCase() + location.slice(1).toLowerCase();
+  const normalizedInterest = interest
+  ? interest.charAt(0).toUpperCase() + interest.slice(1).toLowerCase()
+  : '';
+const normalizedLocation = location
+  ? location.charAt(0).toUpperCase() + location.slice(1).toLowerCase()
+  : '';
 
   let query = supabase
     .from('properties')
@@ -312,8 +329,12 @@ async function getCompletionDates(interest, location, bedrooms = null, budget = 
 // TOOL: Search properties
 // ============================================
 async function searchProperties({ interest, location, bedrooms, budget, isOffplan, completionDate }) {
-  const normalizedInterest = interest.charAt(0).toUpperCase() + interest.slice(1).toLowerCase();
-  const normalizedLocation = location.charAt(0).toUpperCase() + location.slice(1).toLowerCase();
+  const normalizedInterest = interest
+  ? interest.charAt(0).toUpperCase() + interest.slice(1).toLowerCase()
+  : '';
+const normalizedLocation = location
+  ? location.charAt(0).toUpperCase() + location.slice(1).toLowerCase()
+  : '';
 
   if (!location || location.trim() === '') {
     console.error('searchProperties called with empty location');
