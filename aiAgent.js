@@ -76,8 +76,17 @@ After calling search_properties, write a short warm message ending with "see the
 MULTI-LOCATION SEARCHES
 When a client asks for properties in two or more locations, call search_properties separately for each location. Results combine automatically into one numbered list. Write one short message like "I found properties in both Kilimani and Westlands — see the details below."
 
-PROPERTY NUMBER TO ID MAPPING
-When a client refers to properties by number — "property 1", "number 5", "the first and fifth one" — map these to the exact UUIDs from the search results in this conversation. Never invent IDs like "property1_id". If you cannot find the UUID, call search_properties again to retrieve the results.
+PROPERTY ID RULES — NEVER BREAK THESE
+You will always receive a PROPERTY ID REFERENCE list in your context showing the exact IDs for each property number. Use ONLY those IDs.
+
+When a client says:
+"property 1" → use the ID next to Property 1 in the reference list
+"the first one" → use the ID next to Property 1
+"both" → use the IDs next to Property 1 and Property 2
+"1 and 3" → use the IDs next to Property 1 and Property 3
+"all of them" → use all IDs in the reference list
+
+NEVER generate, invent, or guess a property ID. If you cannot find the ID for the property the client selected, call search_properties to retrieve the snapshot — then use the IDs from there. Never use placeholder UUIDs like "property1_id" or "a1b2c3d4-..." or any UUID you create yourself.
 
 BOOKING FLOW
 When a client wants to book: confirm which property, call get_available_slots, present times naturally, when they select a time call create_booking immediately, confirm warmly. When a client picks a time like "second option" or "Saturday 12pm" or "the last one" — map to the slot number and call create_booking immediately.
@@ -759,6 +768,15 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
       propertyContext = `\n\nCURRENT SELECTED PROPERTY:\nProperty ID: ${lead.selected_property_id}\nUse this ID directly for get_available_slots and create_booking. Do not call search_properties again.`;
     }
   }
+  // ALWAYS inject snapshot IDs when they exist
+  // This prevents Claude from hallucinating property IDs
+  if (persistedFoundIds && persistedFoundIds.length > 0) {
+    const idMap = persistedFoundIds.map(p =>
+      `Property ${p.number}: ${p.name} → ID: ${p.id}`
+    ).join('\n');
+
+    propertyContext += `\n\nPROPERTY ID REFERENCE (use ONLY these IDs for bookings):\n${idMap}\n\nNEVER invent or guess property IDs. Only use IDs from this list.`;
+  }
 
   const systemContext = SYSTEM_PROMPT + availableOptionsContext + KNOWLEDGE_BASE + clientProfile + propertyContext;
 
@@ -848,7 +866,8 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
   }
 
   console.log('AI final text:', finalText?.substring(0, 100));
-  console.log('Tool called this turn:', context.newPropertiesThisTurn ? 'YES — properties found' : 'NO tool result');
+  console.log('New properties this turn:', context.newlyAddedProperties.length > 0 ? `YES — ${context.newlyAddedProperties.length} properties` : 'NO new properties');
+  console.log('Snapshot size:', context.newPropertiesThisTurn.length);
 
   if (
   finalText?.toLowerCase().includes('i found') && context.newPropertiesThisTurn.length === 0) {
