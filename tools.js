@@ -27,7 +27,8 @@ const TEMPLATES = {
   BOOKING_CONFIRMED: 'HX9eed3c1924829f0ae1ecab49e84d99d9',
   BOOKING_CANCELLED: 'HX1110acf915d7366c907299818993fa00',
   HOT_LEAD: 'HX8e8cfe432e7ae3256d6d5c343359d85e',
-  NO_PROPERTY_FOUND: 'HX6b9d047af7d746a257c0099c9c34034e'
+  NO_PROPERTY_FOUND: 'HX6b9d047af7d746a257c0099c9c34034e',
+  ESCALATION: 'HX2d148682193946da5dcceadcb4f82b90'
 };
 
 const SYDIA_WHATSAPP = process.env.SYDIA_WHATSAPP_NUMBER;
@@ -926,15 +927,6 @@ async function cancelBooking(leadId) {
 }
 
 // ============================================
-// TOOL: Save message to history
-// ============================================
-async function saveMessage(leadId, role, content) {
-  await supabase
-    .from('conversation_history')
-    .insert({ lead_id: leadId, role, content });
-}
-
-// ============================================
 // TOOL: Escalate to Agent
 // ============================================
 
@@ -942,67 +934,222 @@ async function escalateToAgent(leadId, reason) {
   console.log('Escalating to agent for lead:', leadId, '| Reason:', reason);
 
   try {
-    const { data: lead } = await supabase
+    // ============================================
+    // Fetch lead details
+    // ============================================
+
+    const { data: lead, error: leadError } = await supabase
       .from('leads')
       .select('name, phone, interest, budget, location, size, notes')
       .eq('id', leadId)
-      .single();
+      .maybeSingle();
 
-    const { data: agent, error: agentError } = await supabase
-    .from('agents')
-    .select('agent_name, phone')
-    .eq('tenant_id', TENANT_ID)
-    .eq('active', true)
-    .maybeSingle();
+    if (leadError) {
+      console.error('Lead fetch error:', leadError.message);
+    }
 
-  console.log('Agent query result:', JSON.stringify(agent), 'Error:', agentError?.message);
+    // ============================================
+    // Try property-specific agent first
+    // ============================================
 
-  if (!agent?.phone) {
-    console.error('No active agent found. tenant_id:', TENANT_ID);
-    return { success: false, error: 'No agent available' };
-  }
+    let agent = null;
+
+    if (lead?.location) {
+      const { data: propertyAgent, error: propertyAgentError } = await supabase
+        .from('properties')
+        .select(`
+          agents (
+            agent_name,
+            phone
+          )
+        `)
+        .eq('tenant_id', TENANT_ID)
+        .ilike('location', `%${lead.location}%`)
+        .not('agent_id', 'is', null)
+        .limit(1)
+        .maybeSingle();
+
+      if (propertyAgentError) {
+        console.error('Property agent query error:', propertyAgentError.message);
+      }
+
+      if (propertyAgent?.agents?.phone) {
+        agent = propertyAgent.agents;
+
+        console.log(
+          'Using property-specific agent:',
+          agent.agent_name
+        );
+      }
+    }
+
+    // ============================================
+    // Fallback to any active agent
+    // ============================================
+
+    if (!agent) {
+      const { data: activeAgent, error: agentError } = await supabase
+        .from('agents')
+        .select('agent_name, phone')
+        .eq('tenant_id', TENANT_ID)
+        .eq('active', true)
+        .limit(1)
+        .maybeSingle();
+
+      console.log(
+        'Active agent query result:',
+        JSON.stringify(activeAgent),
+        '| Error:',
+        agentError?.message
+      );
+
+      if (activeAgent?.phone) {
+        agent = activeAgent;
+
+        console.log(
+          'Using fallback active agent:',
+          agent.agent_name
+        );
+      }
+    }
+
+    // ============================================
+    // No agent found
+    // ============================================
+
+    if (!agent?.phone) {
+      console.error(
+        'No agent found for escalation. tenant_id:',
+        TENANT_ID
+      );
+
+      // Still mark lead as escalated
+      await supabase
+        .from('leads')
+        .update({
+          status: 'Contacted',
+          conversation_stage: 'escalated'
+        })
+        .eq('id', leadId);
+
+      // IMPORTANT:
+      // Return success so Nina never tells client
+      // "agents unavailable"
+      return {
+        success: true,
+        agentNotified: false,
+        message: 'Escalation logged but no active agent found'
+      };
+    }
+
+    // ============================================
+    // Prepare lead details
+    // ============================================
 
     const clientName = lead?.name || 'Unknown';
-    const clientPhone = lead?.phone?.replace('whatsapp:', '').trim() || 'N/A';
-    const budget = lead?.budget ? `KES ${Number(lead.budget).toLocaleString()}` : 'N/A';
-    const location = lead?.location || 'N/A';
-    const size = lead?.size || 'N/A';
-    const interest = lead?.interest || 'N/A';
-    const notes = lead?.notes || 'No previous notes';
+
+    const clientPhone =
+      lead?.phone?.replace('whatsapp:', '').trim() || 'N/A';
+
+    const interest = lead?.interest || '';
+
+    const size = lead?.size || '';
+
+    const location = lead?.location || '';
+
+    const budget = lead?.budget
+      ? `KES ${Number(lead.budget).toLocaleString()}`
+      : 'N/A';
+
+    const propertySummary =
+      `${size} in ${location}`.trim() || interest || 'N/A';
+
+    // ============================================
+    // Normalize agent WhatsApp number
+    // ============================================
 
     const agentWhatsApp = agent.phone.startsWith('whatsapp:')
       ? agent.phone
       : `whatsapp:${agent.phone}`;
 
-    const message =
-      `New client handoff from Nina.\n\n` +
-      `Client: ${clientName}\n` +
-      `Phone: ${clientPhone}\n` +
-      `Interest: ${interest}\n` +
-      `Location: ${location}\n` +
-      `Size: ${size}\n` +
-      `Budget: ${budget}\n` +
-      `Reason: ${reason}\n` +
-      `Previous context: ${notes}`;
+    // ============================================
+    // Send Twilio template message
+    // ============================================
 
     await twilioClient.messages.create({
       from: SYDIA_WHATSAPP,
       to: agentWhatsApp,
-      body: message
+
+      // USE CENTRALIZED TEMPLATE CONFIG
+      contentSid: TEMPLATES.ESCALATION,
+
+      contentVariables: JSON.stringify({
+        "1": clientName,
+        "2": clientPhone,
+        "3": propertySummary,
+        "4": reason
+      })
     });
 
-    console.log('Agent notified of escalation:', agent.phone);
+    console.log(
+      'Agent notified successfully via template:',
+      agent.phone
+    );
+
+    // ============================================
+    // Update lead status
+    // ============================================
 
     await supabase
       .from('leads')
-      .update({ status: 'Contacted', conversation_stage: 'escalated' })
+      .update({
+        status: 'Contacted',
+        conversation_stage: 'escalated'
+      })
       .eq('id', leadId);
 
-    return { success: true, agentName: agent.agent_name };
+    // ============================================
+    // Success
+    // ============================================
+
+    return {
+      success: true,
+      agentName: agent.agent_name,
+      agentNotified: true
+    };
 
   } catch (err) {
+
+    // ============================================
+    // Catch ALL failures
+    // ============================================
+
     console.error('Escalation error:', err.message);
-    return { success: false, error: err.message };
+
+    // Still update lead stage
+    try {
+      await supabase
+        .from('leads')
+        .update({
+          conversation_stage: 'escalated'
+        })
+        .eq('id', leadId);
+
+    } catch (updateErr) {
+      console.error(
+        'Failed to update escalation stage:',
+        updateErr.message
+      );
+    }
+
+    // IMPORTANT:
+    // Always return success so Nina NEVER says:
+    // "agents unavailable"
+    return {
+      success: true,
+      agentNotified: false,
+      message: 'Escalation logged'
+    };
   }
 }
 
