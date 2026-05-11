@@ -76,6 +76,13 @@ After calling search_properties, write a short warm message ending with "see the
 MULTI-LOCATION SEARCHES
 When a client asks for properties in two or more locations, call search_properties separately for each location. Results combine automatically into one numbered list. Write one short message like "I found properties in both Kilimani and Westlands — see the details below."
 
+INTERNAL DATA — NEVER EXPOSE TO CLIENT
+Property IDs, UUIDs, database IDs, snapshot data, fingerprints, and any internal reference codes are strictly internal system data. Never show these to clients under any circumstances.
+
+Clients should only ever see: property name, location, number of bedrooms, size in sqm, price, completion date, amenities, and payment plan details.
+
+If you see fields like id, propertyId, uuid, snapshotId, fingerprint, number — use them internally for tool calls only. Never mention or display them in your response to the client.
+
 PROPERTY ID RULES — NEVER BREAK THESE
 You will always receive a PROPERTY ID REFERENCE list in your context showing the exact IDs for each property number. Use ONLY those IDs.
 
@@ -786,12 +793,12 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
   }
   // ALWAYS inject snapshot IDs when they exist
   // This prevents Claude from hallucinating property IDs
-  if (persistedFoundIds && persistedFoundIds.length > 0) {
+ if (persistedFoundIds && persistedFoundIds.length > 0) {
     const idMap = persistedFoundIds.map(p =>
       `Property ${p.number}: ${p.name} → ID: ${p.id}`
     ).join('\n');
 
-    propertyContext += `\n\nPROPERTY ID REFERENCE (use ONLY these IDs for bookings):\n${idMap}\n\nNEVER invent or guess property IDs. Only use IDs from this list.`;
+    propertyContext += `\n\nPROPERTY ID REFERENCE (use ONLY these IDs for tool calls, NEVER show IDs to client):\n${idMap}`;
   }
 
   const systemContext = SYSTEM_PROMPT + availableOptionsContext + KNOWLEDGE_BASE + clientProfile + propertyContext;

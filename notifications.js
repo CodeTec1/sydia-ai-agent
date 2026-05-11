@@ -87,43 +87,50 @@ async function send12HourReminders() {
     const agentName = booking.agent_name || 'your agent';
     const agentPhone = booking.agent_phone;
 
-    const viewingTime = new Date(booking.start_datetime).toLocaleString('en-KE', {
+    const startDate = new Date(booking.start_datetime);
+
+    // Format date and time separately to match template variables
+    const formattedDate = startDate.toLocaleDateString('en-KE', {
       timeZone: 'Africa/Nairobi',
       weekday: 'long',
       month: 'short',
-      day: 'numeric',
+      day: 'numeric'
+    });
+
+    const formattedTime = startDate.toLocaleTimeString('en-KE', {
+      timeZone: 'Africa/Nairobi',
       hour: 'numeric',
       minute: '2-digit',
       hour12: true
     });
 
-    // Send to client
+    const humanReadableDateTime = `${formattedDate} at ${formattedTime}`;
+
+    // Send to client — plain text, no template needed
     if (leadPhone) {
       await sendMessage(
         leadPhone,
         `Hi ${leadName}, just a reminder that your property viewing is tomorrow.\n\n` +
         `Property: ${propertyName}\n` +
-        `Time: ${viewingTime}\n` +
+        `Time: ${humanReadableDateTime}\n` +
         `Address: ${propertyAddress}\n\n` +
         `Your agent ${agentName} will meet you there. See you soon!`
       );
     }
 
-    // Send to agent via template
+    // Send to agent via template with CORRECT variable mapping
+    // {{1}} = Client name, {{2}} = Phone, {{3}} = Property, {{4}} = Address, {{5}} = Date, {{6}} = Time
     if (agentPhone) {
       await sendTemplateToAgent(agentPhone, TEMPLATES.VIEWING_REMINDER, {
         "1": leadName,
-        "2": leadPhone?.replace('whatsapp:', '') || 'N/A',
+        "2": leadPhone?.replace('whatsapp:', '').trim() || 'N/A',
         "3": propertyName,
-        "4": viewingTime,
-        "5": propertyAddress,
-        "6": agentName,
-        "7": 'N/A',
-        "8": 'N/A'
+        "4": propertyAddress,
+        "5": formattedDate,
+        "6": formattedTime
       });
     }
 
-    // Mark as sent
     await supabase
       .from('bookings')
       .update({ reminder_12h_sent: true })
@@ -170,27 +177,49 @@ async function send1HourReminders() {
     const propertyName = booking.properties?.property_name || 'the property';
     const propertyAddress = booking.properties?.address || '';
     const agentName = booking.agent_name || 'your agent';
+    const agentPhone = booking.agent_phone;
 
-    const viewingTime = new Date(booking.start_datetime).toLocaleTimeString('en-KE', {
+    const startDate = new Date(booking.start_datetime);
+
+    const formattedDate = startDate.toLocaleDateString('en-KE', {
+      timeZone: 'Africa/Nairobi',
+      weekday: 'long',
+      month: 'short',
+      day: 'numeric'
+    });
+
+    const formattedTime = startDate.toLocaleTimeString('en-KE', {
       timeZone: 'Africa/Nairobi',
       hour: 'numeric',
       minute: '2-digit',
       hour12: true
     });
 
-    // Send to client
+    // Send to client — plain text
     if (leadPhone) {
       await sendMessage(
         leadPhone,
         `Hi ${leadName}, your viewing starts in 1 hour!\n\n` +
         `${propertyName}\n` +
         `${propertyAddress}\n` +
-        `Time: ${viewingTime}\n\n` +
+        `Time: ${formattedTime}\n\n` +
         `${agentName} is ready for you. See you soon!`
       );
     }
 
-    // Mark as sent
+    // Send to agent via template — was missing, now added
+    // {{1}} = Client name, {{2}} = Phone, {{3}} = Property, {{4}} = Address, {{5}} = Date, {{6}} = Time
+    if (agentPhone) {
+      await sendTemplateToAgent(agentPhone, TEMPLATES.VIEWING_REMINDER, {
+        "1": leadName,
+        "2": leadPhone?.replace('whatsapp:', '').trim() || 'N/A',
+        "3": propertyName,
+        "4": propertyAddress,
+        "5": formattedDate,
+        "6": formattedTime
+      });
+    }
+
     await supabase
       .from('bookings')
       .update({ reminder_1h_sent: true })
@@ -345,5 +374,4 @@ async function runNotifications() {
 
   console.log('Notifications complete');
 }
-
 module.exports = { runNotifications };
