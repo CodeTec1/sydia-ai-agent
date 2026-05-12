@@ -1020,7 +1020,7 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     savedInterest: lead.interest || null,
     completedBookings: 0,
     propertyCounter: persistedFoundIds.length, // Start from where previous session left off
-    propertyIdMap: {},  // Built from persisted snapshot on load
+    propertyIdMap: rebuiltIdMap,  // Built from persisted snapshot on load
     toolCallsThisTurn: 0
   };
 
