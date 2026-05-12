@@ -80,7 +80,11 @@ WHEN NO PROPERTIES ARE FOUND
 Tell the client honestly. Use the suggestion data returned by the tool to guide alternatives — available bedroom counts and price ranges. Offer to adjust criteria. Never invent alternatives.
 
 PROPERTY PRESENTATION RULES
-When presenting search results, never invent narrative about the properties. Do not say things like "this is back on the list", "newer options", "this just became available", or any phrasing that implies timeline or availability changes you do not have data for. Simply present what the search returned. You do not know when a property was added, whether it was previously unavailable, or how it compares in recency to other properties. Only state facts from the property data itself.
+When presenting search results, never invent narrative. Do not say things like "this is back on the list", "newer options", "recently added", "I noticed", "this just became available", or any phrasing that implies you have knowledge about timing, availability changes, or history that is not in the current search result.
+
+Simply present what the search returned. You do not know when a property was added, whether it was previously shown to this client, or how it compares in recency to others. Only state facts from the property data.
+
+Never say "I noticed" followed by any inventory claim. Never say "newer" or "new listing" unless the property description itself says this.
 
 WHEN PRESENTING PROPERTIES
 After calling search_properties, write a short warm message ending with "see the details below" or "take a look below". The property cards follow your message automatically. Keep your message short. Do not list property details in your text.
@@ -95,8 +99,8 @@ Clients should only ever see: property name, location, number of bedrooms, size 
 
 If you see fields like id, propertyId, uuid, snapshotId, fingerprint, number — use them internally for tool calls only. Never mention or display them in your response to the client.
 
-PROPERTY ID RULES — NEVER BREAK THESE
-You will always receive a PROPERTY ID REFERENCE list in your context showing the exact IDs for each property number. Use ONLY those IDs.
+PROPERTY REFERENCE - NEVER BREAK THESE
+Always refer to properties by their number — Property 1, Property 2, Property 3 and so on. Never mention, display, or reference internal IDs, database codes, or UUIDs. When calling get_available_slots or create_booking, use propertyNumber not propertyId. The system handles ID resolution automatically in the backend. You never need to know or use property IDs.
 
 When a client says:
 "property 1" → use the ID next to Property 1 in the reference list
@@ -235,39 +239,39 @@ const TOOL_DEFINITIONS = [
   
   {
     name: 'get_available_slots',
-    description: 'Get available viewing time slots for a property. IMPORTANT: The propertyId must be the exact UUID from the search_properties results. Never invent or guess a property ID.',
+    description: 'Get available viewing time slots for a property. Use the property NUMBER shown to the client, not any ID.',
     input_schema: {
       type: 'object',
       properties: {
-        propertyId: {
-          type: 'string',
-          description: 'The exact property UUID returned by search_properties. Example: "fafc336e-5ad7-4870-9209-76731b69566f"'
+        propertyNumber: {
+          type: 'integer',
+          description: 'The property number as shown to the client, e.g. 1, 2, 3'
         }
       },
-      required: ['propertyId']
+      required: ['propertyNumber']
     }
   },
 
    {
     name: 'create_booking',
-    description: 'Create a confirmed viewing booking. IMPORTANT: propertyId must be the exact UUID from search_properties results. slotNumber must be the number the client chose from get_available_slots.',
+    description: 'Create a viewing booking for a property. Use the property NUMBER and slot NUMBER.',
     input_schema: {
       type: 'object',
       properties: {
-        propertyId: {
-          type: 'string',
-          description: 'Exact property UUID from search_properties results'
+        propertyNumber: {
+          type: 'integer',
+          description: 'The property number as shown to the client, e.g. 1, 2, 3'
         },
         slotNumber: {
-          type: 'number',
-          description: 'The slot number chosen by the client from get_available_slots'
+          type: 'integer',
+          description: 'The slot number the client selected from the available slots list'
         },
         leadName: {
           type: 'string',
-          description: 'Client name'
+          description: 'The client full name'
         }
       },
-      required: ['propertyId', 'slotNumber']
+      required: ['propertyNumber', 'slotNumber', 'leadName']
     }
   },
 
@@ -362,34 +366,85 @@ async function executeTool(toolName, toolInput, context) {
     
    
     case 'search_properties': {
-  // Normalize inputs
+
+  // =====================================================
+  // HARD VALIDATION — backend enforced
+  // =====================================================
+
+  if (!context.leadName?.trim()) {
+    return {
+      error: 'Please collect the client name before searching for properties.',
+      missingField: 'name'
+    };
+  }
+
+  if (!toolInput.interest?.trim()) {
+    return {
+      error: 'Missing interest. Ask whether client wants to Buy or Rent first.',
+      missingField: 'interest'
+    };
+  }
+
+  if (!toolInput.location?.trim()) {
+    return {
+      error: 'Missing location. Ask which neighborhood the client prefers.',
+      missingField: 'location'
+    };
+  }
+
+  if (
+    toolInput.bedrooms === undefined ||
+    toolInput.bedrooms === null
+  ) {
+    return {
+      error: 'Missing bedrooms. Ask how many bedrooms the client needs.',
+      missingField: 'bedrooms'
+    };
+  }
+
+  if (!toolInput.budget && !context.savedBudget) {
+    return {
+      error: 'Missing budget. Ask for the client budget range before searching.',
+      missingField: 'budget'
+    };
+  }
+
+  // =====================================================
+  // NORMALIZATION
+  // No fake fallback defaults
+  // =====================================================
+
   const normalizedInterest =
-    toolInput.interest?.toLowerCase().trim() || 'any';
+    toolInput.interest.toLowerCase().trim();
 
   const normalizedLocation =
-    toolInput.location?.toLowerCase().trim() || 'any';
+    toolInput.location.trim();
 
   const normalizedBedrooms =
-    toolInput.bedrooms ?? 'any';
+    toolInput.bedrooms;
 
   const normalizedBudget =
-    toolInput.budget != null && !isNaN(Number(toolInput.budget))
+    toolInput.budget != null &&
+    !isNaN(Number(toolInput.budget))
       ? Number(toolInput.budget)
-      : 'any';
+      : (
+          context.savedBudget
+            ? Number(context.savedBudget)
+            : null
+        );
 
   // =====================================================
   // RESET LOGIC
-  // Only reset on MAJOR search intent changes.
-  // Location changes are allowed to accumulate.
+  // Only reset on MAJOR intent changes
   // =====================================================
 
   const interestChanged =
     context.savedInterest &&
-    normalizedInterest !== context.savedInterest.toLowerCase().trim();
+    normalizedInterest !==
+      context.savedInterest.toLowerCase().trim();
 
   const bedroomChanged =
     context.savedSize !== null &&
-    normalizedBedrooms !== 'any' &&
     normalizedBedrooms !== context.savedSize;
 
   const shouldReset =
@@ -397,20 +452,24 @@ async function executeTool(toolName, toolInput, context) {
     context.newPropertiesThisTurn.length > 0;
 
   if (shouldReset) {
-    console.log('Major search intent changed — resetting snapshot');
 
-    // Clear DB FIRST
+    console.log(
+      'Major search intent changed — resetting snapshot'
+    );
+
+    // Clear DB first
     await tools.updateLead(context.leadId, {
       property_snapshot: JSON.stringify([]),
       found_property_ids: JSON.stringify([]),
       search_fingerprints: JSON.stringify([])
     });
 
-    // Then clear memory
+    // Clear memory
     context.newPropertiesThisTurn = [];
     context.foundPropertyIds = [];
     context.searchFingerprintSet = new Set();
     context.newlyAddedProperties = [];
+    context.propertyIdMap = {};
   }
 
   // =====================================================
@@ -428,7 +487,9 @@ async function executeTool(toolName, toolInput, context) {
     context.searchFingerprintSet.has(fingerprint) &&
     context.newPropertiesThisTurn.length > 0
   ) {
+
     console.log(`Fingerprint hit: ${fingerprint}`);
+
     console.log(
       `Returning snapshot with ${context.newPropertiesThisTurn.length} properties`
     );
@@ -444,39 +505,88 @@ async function executeTool(toolName, toolInput, context) {
   // NEW SEARCH
   // =====================================================
 
-  const result = await tools.searchProperties(toolInput);
+  const result = await tools.searchProperties({
+    interest: normalizedInterest,
+    location: normalizedLocation,
+    bedrooms: normalizedBedrooms,
+    budget: normalizedBudget,
+    isOffplan: toolInput.isOffplan,
+    completionDate: toolInput.completionDate
+  });
 
   if (result.properties && result.properties.length > 0) {
-    // Mark fingerprint as searched
-    context.searchFingerprintSet.add(fingerprint);
 
-    // Existing IDs for deduplication
-    const existingIds = new Set(
-      context.newPropertiesThisTurn.map(p => p.id)
-    );
+    // =====================================================
+    // Store property ID map separately
+    // Claude NEVER sees raw IDs
+    // =====================================================
 
-    // Deduplicate and renumber
-    const newOnes = result.properties
-      .filter(p => !existingIds.has(p.id))
-      .map((p, i) => ({
-        ...p,
-        number: context.newPropertiesThisTurn.length + i + 1
-      }));
+    if (result.propertyIdMap) {
 
-    // Accumulate
-    if (newOnes.length > 0) {
-      context.newPropertiesThisTurn.push(...newOnes);
-      context.newlyAddedProperties.push(...newOnes);
+      context.propertyIdMap = {
+        ...(context.propertyIdMap || {}),
+        ...result.propertyIdMap
+      };
 
       console.log(
-        `Added ${newOnes.length} new properties. Total snapshot: ${context.newPropertiesThisTurn.length}`
+        'Updated propertyIdMap:',
+        JSON.stringify(context.propertyIdMap)
       );
     }
 
-    // Auto-select if only one property exists
+    // Mark fingerprint searched
+    context.searchFingerprintSet.add(fingerprint);
+
+    // =====================================================
+    // Deduplicate using INTERNAL IDs only
+    // =====================================================
+
+    const existingIds = new Set(
+      Object.values(context.propertyIdMap || {})
+    );
+
+    const existingPropertyNumbers = new Set(
+      context.newPropertiesThisTurn.map(
+        p => `${p.name}-${p.location}-${p.price}`
+      )
+    );
+
+    // =====================================================
+    // Add clean properties ONLY
+    // No UUIDs exposed to Claude
+    // =====================================================
+
+    const newOnes = result.properties
+          .filter(p => !existingIds.has(p.id))
+          .map((p, i) => {
+            const num = context.newPropertiesThisTurn.length + i + 1;
+            // Store UUID in backend map — never goes to Claude
+            context.propertyIdMap[num] = result.propertyIdMap?.[i + 1] || p.id;
+            return {
+              ...p,
+              number: num
+              // Note: p.id may or may not be present depending on what searchProperties returns
+              // The real UUID is now only in context.propertyIdMap
+            };
+          });
+
+        if (newOnes.length > 0) {
+          context.newPropertiesThisTurn.push(...newOnes);
+          context.newlyAddedProperties.push(...newOnes);
+          console.log(`Added ${newOnes.length} new. Total: ${context.newPropertiesThisTurn.length}`);
+        }
+
+    // =====================================================
+    // Auto-select single property
+    // =====================================================
+
     if (context.newPropertiesThisTurn.length === 1) {
+
+      const onlyProperty =
+        context.newPropertiesThisTurn[0];
+
       context.currentPropertyId =
-        context.newPropertiesThisTurn[0].id;
+        context.propertyIdMap?.[onlyProperty.number];
 
       console.log(
         'Single property auto-selected:',
@@ -484,48 +594,65 @@ async function executeTool(toolName, toolInput, context) {
       );
     }
 
-    // Stable property reference map
-    context.foundPropertyIds =
-      context.newPropertiesThisTurn.map(p => ({
-        number: p.number,
-        id: p.id,
-        name: p.name
-      }));
+    // =====================================================
+    // Clean property references
+    // No IDs saved into Claude-visible context
+    // =====================================================
 
-    // Debug logging
+    // Store number, name, AND the real UUID so it persists across messages
+        context.foundPropertyIds = context.newPropertiesThisTurn.map(p => ({
+          number: p.number,
+          id: context.propertyIdMap[p.number] || null,  // Real UUID from map
+          name: p.name
+        }));
+
+    // =====================================================
+    // Debug snapshot
+    // =====================================================
+
     console.log(
       'SNAPSHOT STATE:',
       JSON.stringify(
         context.newPropertiesThisTurn.map(p => ({
           number: p.number,
-          id: p.id,
           name: p.name,
-          location: p.location
+          location: p.location,
+          price: p.price
         }))
       )
     );
 
+    // =====================================================
     // Persist snapshot
+    // IMPORTANT:
+    // property_snapshot contains NO IDs
+    // =====================================================
+
     const preferencesToSave = {
       conversation_stage: 'properties_shown',
+
       property_snapshot: JSON.stringify(
         context.newPropertiesThisTurn
       ),
+
       found_property_ids: JSON.stringify(
         context.foundPropertyIds
       ),
+
       search_fingerprints: JSON.stringify([
         ...context.searchFingerprintSet
       ])
     };
 
-    // Save lead preferences
+    // Save preferences
     if (toolInput.interest) {
-      preferencesToSave.interest = toolInput.interest;
+      preferencesToSave.interest =
+        toolInput.interest;
     }
 
     if (toolInput.location) {
-      preferencesToSave.location = toolInput.location;
+      preferencesToSave.location =
+        toolInput.location;
     }
 
     if (toolInput.bedrooms !== undefined) {
@@ -543,7 +670,10 @@ async function executeTool(toolName, toolInput, context) {
       preferencesToSave
     );
 
+    // =====================================================
     // Update saved state
+    // =====================================================
+
     context.savedLocation =
       toolInput.location || context.savedLocation;
 
@@ -561,7 +691,10 @@ async function executeTool(toolName, toolInput, context) {
       toolInput.interest || context.savedInterest;
   }
 
-  // Always return the full stable snapshot
+  // =====================================================
+  // RETURN STABLE SNAPSHOT
+  // =====================================================
+
   return {
     properties: context.newPropertiesThisTurn,
     count: context.newPropertiesThisTurn.length
@@ -569,90 +702,206 @@ async function executeTool(toolName, toolInput, context) {
 }
 
     case 'get_available_slots': {
-  const result = await tools.getAvailableSlots(toolInput.propertyId);
+      // Resolve property number to real UUID using backend map
+      let resolvedPropertyId = null;
 
-  if (result.slotMap) {
-    context.currentSlotMap = JSON.stringify(result.slotMap);
-
-    // IMPORTANT: verify against known properties in context
-    const validProperty = (context.newPropertiesThisTurn || [])
-      .find(p => p.id === toolInput.propertyId);
-
-    const updateFields = {
-      available_slots: JSON.stringify(result.slotMap)
-    };
-
-    if (validProperty) {
-      context.currentPropertyId = toolInput.propertyId;
-      updateFields.selected_property_id = toolInput.propertyId;
-      updateFields.conversation_stage = 'selecting_slot';
-    } else {
-      console.warn(
-        'Rejected invalid property selection:',
-        toolInput.propertyId
-      );
-    }
-
-    await tools.updateLead(context.leadId, updateFields);
-  }
-
-  return result;
-}
-
-    case 'create_booking': {
-      const bookingInput = {
-        leadId: context.leadId,
-        propertyId: toolInput.propertyId || context.currentPropertyId,
-        slotNumber: toolInput.slotNumber,
-        slotMap: toolInput.slotMap || context.currentSlotMap,
-        leadName: context.leadName || toolInput.leadName || 'Client', // Server enforces this
-        leadPhone: context.leadPhone
-      };
-
-      console.log('Booking input:', JSON.stringify(bookingInput));
-
-      if (!bookingInput.propertyId) {
-        return { success: false, error: 'Missing property ID. Please confirm which property the client wants to book.' };
+      if (toolInput.propertyNumber && context.propertyIdMap) {
+        resolvedPropertyId = context.propertyIdMap[toolInput.propertyNumber];
+        console.log(`Resolved property ${toolInput.propertyNumber} → ${resolvedPropertyId}`);
       }
 
-      if (!bookingInput.slotMap) {
-        return { success: false, error: 'No slot map available. Please get available slots first.' };
+      if (!resolvedPropertyId) {
+        console.warn('Cannot resolve property number:', toolInput.propertyNumber);
+        return {
+          success: false,
+          error: `Could not identify property number ${toolInput.propertyNumber}. Please confirm the property number from the list.`
+        };
       }
 
-      // Validate property ID BEFORE booking
-const uuidPattern =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      // Validate against known properties
+      const validProperty = context.foundPropertyIds?.find(p => p.id === resolvedPropertyId);
+      if (!validProperty) {
+        console.warn('Property not in current snapshot:', resolvedPropertyId);
+        return {
+          success: false,
+          error: 'That property is not in the current search results. Please select from the list shown.'
+        };
+      }
 
-if (
-  !bookingInput.propertyId ||
-  !uuidPattern.test(bookingInput.propertyId)
-) {
-  console.error(
-    'Invalid property ID rejected:',
-    bookingInput.propertyId
-  );
+      const result = await tools.getAvailableSlots(resolvedPropertyId);
 
-  return {
-    success: false,
-    error:
-      `Invalid property ID "${bookingInput.propertyId}". ` +
-      `You must use the exact UUID from the search results.`
-  };
-}
+      if (result.slotMap) {
+        context.currentSlotMap = JSON.stringify(result.slotMap);
+        context.currentPropertyId = resolvedPropertyId;
 
-const result = await tools.createBooking(bookingInput);
-
-      if (result.success) {
-        context.completedBookings += 1;
         await tools.updateLead(context.leadId, {
-          conversation_stage: 'booking_confirmed'
+          available_slots: JSON.stringify(result.slotMap)
         });
-        console.log('Stage updated to booking_confirmed');
-        console.log('Completed bookings this turn:', context.completedBookings);
       }
 
       return result;
     }
+
+   case 'create_booking': {
+
+  // =====================================================
+  // Resolve property number → real UUID
+  // Backend-only mapping
+  // =====================================================
+
+  let resolvedPropertyId = null;
+
+  if (
+    toolInput.propertyNumber &&
+    context.propertyIdMap
+  ) {
+
+    resolvedPropertyId =
+      context.propertyIdMap[
+        toolInput.propertyNumber
+      ];
+
+    console.log(
+      `Booking: resolved property ${toolInput.propertyNumber} → ${resolvedPropertyId}`
+    );
+  }
+
+  // =====================================================
+  // Fallback to current selected property
+  // =====================================================
+
+  if (!resolvedPropertyId) {
+    resolvedPropertyId =
+      context.currentPropertyId || null;
+  }
+
+  // =====================================================
+  // Build booking input
+  // =====================================================
+
+  const bookingInput = {
+
+    leadId: context.leadId,
+
+    // ALWAYS use resolved UUID internally
+    propertyId: resolvedPropertyId,
+
+    slotNumber: toolInput.slotNumber,
+
+    slotMap:
+      toolInput.slotMap ||
+      context.currentSlotMap,
+
+    // Server still enforces this
+    leadName:
+      context.leadName ||
+      toolInput.leadName ||
+      'Client',
+
+    leadPhone: context.leadPhone
+  };
+
+  console.log(
+    'Booking input:',
+    JSON.stringify(bookingInput)
+  );
+
+  // =====================================================
+  // Validate resolved property
+  // =====================================================
+
+  if (!bookingInput.propertyId) {
+
+    console.warn(
+      'Cannot resolve property number for booking:',
+      toolInput.propertyNumber
+    );
+
+    return {
+      success: false,
+
+      error:
+        toolInput.propertyNumber
+          ? `Could not identify property number ${toolInput.propertyNumber}. Please confirm the property number.`
+          : 'Missing property selection. Please confirm which property the client wants to book.'
+    };
+  }
+
+  // =====================================================
+  // Validate slot map
+  // =====================================================
+
+  if (!bookingInput.slotMap) {
+
+    return {
+      success: false,
+
+      error:
+        'No slot map available. Please get available slots first.'
+    };
+  }
+
+  // =====================================================
+  // Validate UUID BEFORE booking
+  // Extra safety
+  // =====================================================
+
+  const uuidPattern =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  if (
+    !bookingInput.propertyId ||
+    !uuidPattern.test(bookingInput.propertyId)
+  ) {
+
+    console.error(
+      'Invalid property ID rejected:',
+      bookingInput.propertyId
+    );
+
+    return {
+      success: false,
+
+      error:
+        'Could not resolve a valid property reference for booking.'
+    };
+  }
+
+  // =====================================================
+  // Create booking
+  // =====================================================
+
+  const result =
+    await tools.createBooking(bookingInput);
+
+  // =====================================================
+  // Post-booking updates
+  // =====================================================
+
+  if (result.success) {
+
+    context.completedBookings += 1;
+
+    await tools.updateLead(
+      context.leadId,
+      {
+        conversation_stage:
+          'booking_confirmed'
+      }
+    );
+
+    console.log(
+      'Stage updated to booking_confirmed'
+    );
+
+    console.log(
+      'Completed bookings this turn:',
+      context.completedBookings
+    );
+  }
+
+  return result;
+}
 
     case 'cancel_booking': {
       return await tools.cancelBooking(context.leadId);
@@ -735,6 +984,17 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     console.error('Failed to parse persisted snapshot:', e.message);
   }
 
+  // Rebuild propertyIdMap from persisted found_property_ids
+  // This restores the number → UUID mapping across messages
+  const rebuiltIdMap = {};
+  if (persistedFoundIds && persistedFoundIds.length > 0) {
+    persistedFoundIds.forEach(p => {
+      if (p.number && p.id) {
+        rebuiltIdMap[p.number] = p.id;
+      }
+    });
+  }
+
   const context = {
     leadId: lead.id,
     leadName: lead.name || null,
@@ -750,6 +1010,8 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     savedBudget: lead.budget ? Number(lead.budget) : null,
     savedInterest: lead.interest || null,
     completedBookings: 0,
+    propertyCounter: persistedFoundIds.length, // Start from where previous session left off
+    propertyIdMap: {},  // Built from persisted snapshot on load
     toolCallsThisTurn: 0
   };
 
@@ -805,12 +1067,13 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
   }
   // ALWAYS inject snapshot IDs when they exist
   // This prevents Claude from hallucinating property IDs
- if (persistedFoundIds && persistedFoundIds.length > 0) {
-    const idMap = persistedFoundIds.map(p =>
-      `Property ${p.number}: ${p.name} → ID: ${p.id}`
+ // Inject clean property reference — numbers only, no UUIDs
+  if (persistedFoundIds && persistedFoundIds.length > 0) {
+    const refList = persistedFoundIds.map(p =>
+      `Property ${p.number}: ${p.name}`
     ).join('\n');
 
-    propertyContext += `\n\nPROPERTY ID REFERENCE (use ONLY these IDs for tool calls, NEVER show IDs to client):\n${idMap}`;
+    propertyContext += `\n\nPROPERTY REFERENCE:\n${refList}`;
   }
 
   const systemContext = SYSTEM_PROMPT + availableOptionsContext + KNOWLEDGE_BASE + clientProfile + propertyContext;

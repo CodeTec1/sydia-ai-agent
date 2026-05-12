@@ -33,6 +33,11 @@ const TEMPLATES = {
 
 const SYDIA_WHATSAPP = process.env.SYDIA_WHATSAPP_NUMBER;
 
+function formatKES(value) {
+  const num = Number(value || 0);
+  return isNaN(num) ? 'Price on request' : `KES ${num.toLocaleString()}`;
+}
+
 // ============================================
 // TOOL: Get or create lead
 // ============================================
@@ -211,8 +216,8 @@ async function getAvailableOptions() {
   const hasReady = data.some(r => r.is_offplan === false);
 
   const prices = data.map(r => r.price).filter(p => p > 0);
-  const minPrice = Math.min(...prices);
-  const maxPrice = Math.max(...prices);
+  const minPrice = prices.length ? Math.min(...prices) : 0;
+  const maxPrice = prices.length ? Math.max(...prices) : 0;
 
   // Build per-location summary so Nina knows exactly what exists where
   const locationSummary = locations.map(loc => {
@@ -277,9 +282,7 @@ async function getBedroomOptions(interest, location) {
   const normalizedInterest = interest
   ? interest.charAt(0).toUpperCase() + interest.slice(1).toLowerCase()
   : '';
-const normalizedLocation = location
-  ? location.charAt(0).toUpperCase() + location.slice(1).toLowerCase()
-  : '';
+const normalizedLocation = location?.trim() || '';
 
   const { data } = await supabase
     .from('properties')
@@ -302,9 +305,7 @@ async function getCompletionDates(interest, location, bedrooms = null, budget = 
   const normalizedInterest = interest
   ? interest.charAt(0).toUpperCase() + interest.slice(1).toLowerCase()
   : '';
-const normalizedLocation = location
-  ? location.charAt(0).toUpperCase() + location.slice(1).toLowerCase()
-  : '';
+const normalizedLocation = location?.trim() || '';
 
   let query = supabase
     .from('properties')
@@ -329,100 +330,280 @@ const normalizedLocation = location
 // ============================================
 // TOOL: Search properties
 // ============================================
-async function searchProperties({ interest, location, bedrooms, budget, isOffplan, completionDate }) {
-  const normalizedInterest = interest
-  ? interest.charAt(0).toUpperCase() + interest.slice(1).toLowerCase()
-  : '';
-const normalizedLocation = location
-  ? location.charAt(0).toUpperCase() + location.slice(1).toLowerCase()
-  : '';
+async function searchProperties({
+  interest,
+  location,
+  bedrooms,
+  budget,
+  isOffplan,
+  completionDate
+} = {}) {
 
-  if (!location || location.trim() === '') {
-    console.error('searchProperties called with empty location');
-    return { properties: [], count: 0, error: 'Missing location' };
-  }
+  try {
 
-  let query = supabase
-    .from('properties')
-    .select('id, property_name, project_name, type, price, bedrooms, sqm, plot_size, location, address, photo_url, description, completion_date, is_offplan')
-    .eq('tenant_id', TENANT_ID)
-    .ilike('type', normalizedInterest)
-    .ilike('location', `%${normalizedLocation}%`)
-    .eq('available', true)
-    .order('price', { ascending: true })
-    .limit(5);
+    // =====================================================
+    // NORMALIZATION
+    // No forced casing — ILIKE already handles case
+    // =====================================================
 
-  if (budget) {
-    const budgetNum = parseFloat(budget.toString().replace(/[^0-9.]/g, ''));
-    if (budgetNum > 0) query = query.lte('price', budgetNum * 1.2);
-  }
+    const normalizedInterest =
+      interest?.trim() || '';
 
-  if (isOffplan === true) {
-    query = query.eq('is_offplan', true);
-    if (completionDate) query = query.ilike('completion_date', `%${completionDate}%`);
-  } else if (isOffplan === false) {
-    query = query.eq('is_offplan', false);
-  }
+    const normalizedLocation =
+      location?.trim() || '';
 
-  if (bedrooms !== null && bedrooms !== undefined) {
-    query = query.eq('bedrooms', parseInt(bedrooms));
-  }
+    // =====================================================
+    // HARD GUARD
+    // =====================================================
 
-  // ✅ RUN QUERY ONCE
-  const { data, error } = await query;
+    if (!normalizedLocation) {
+      console.error(
+        'searchProperties called with empty location'
+      );
 
-  // ❌ If no results → try alternatives
-  if (error || !data || data.length === 0) {
-
-    const { data: alternatives } = await supabase
-      .from('properties')
-      .select('bedrooms, price, completion_date, location')
-      .eq('tenant_id', TENANT_ID)
-      .ilike('type', normalizedInterest)
-      .ilike('location', `%${normalizedLocation}%`)
-      .eq('available', true)
-      .limit(10);
-
-    let suggestion = null;
-
-    if (alternatives && alternatives.length > 0) {
-      const beds = [...new Set(alternatives.map(r => r.bedrooms).filter(Boolean))].sort();
-      const prices = alternatives.map(r => r.price).filter(Boolean);
-
-      const minPrice = Math.min(...prices);
-      const maxPrice = Math.max(...prices);
-
-      suggestion = {
-        availableBedrooms: beds,
-        priceRange: {
-          min: `KES ${Number(minPrice).toLocaleString()}`,
-          max: `KES ${Number(maxPrice).toLocaleString()}`
-        }
+      return {
+        properties: [],
+        count: 0,
+        error: 'Missing location'
       };
     }
 
-    return { properties: [], count: 0, suggestion };
+    // =====================================================
+    // BASE QUERY
+    // =====================================================
+
+    let query = supabase
+      .from('properties')
+      .select(`
+        id,
+        property_name,
+        project_name,
+        type,
+        price,
+        bedrooms,
+        sqm,
+        plot_size,
+        location,
+        address,
+        photo_url,
+        description,
+        completion_date,
+        is_offplan
+      `)
+      .eq('tenant_id', TENANT_ID)
+      .eq('available', true)
+      .order('price', { ascending: true })
+      .limit(5);
+
+    // =====================================================
+    // FILTERS
+    // =====================================================
+
+    if (normalizedInterest) {
+      query = query.ilike(
+        'type',
+        `%${normalizedInterest}%`
+      );
+    }
+
+    if (normalizedLocation) {
+      query = query.ilike(
+        'location',
+        `%${normalizedLocation}%`
+      );
+    }
+
+    if (
+      bedrooms !== undefined &&
+      bedrooms !== null
+    ) {
+      query = query.eq(
+        'bedrooms',
+        parseInt(bedrooms)
+      );
+    }
+
+    if (budget) {
+
+      const budgetNum = parseFloat(
+        budget.toString().replace(/[^0-9.]/g, '')
+      );
+
+      if (!isNaN(budgetNum) && budgetNum > 0) {
+        query = query.lte(
+          'price',
+          budgetNum * 1.2
+        );
+      }
+    }
+
+    if (isOffplan === true) {
+
+      query = query.eq('is_offplan', true);
+
+      if (completionDate) {
+        query = query.ilike(
+          'completion_date',
+          `%${completionDate}%`
+        );
+      }
+
+    } else if (isOffplan === false) {
+
+      query = query.eq('is_offplan', false);
+    }
+
+    // =====================================================
+    // RUN QUERY
+    // =====================================================
+
+    const { data, error } = await query;
+
+    // =====================================================
+    // NO RESULTS → SUGGEST ALTERNATIVES
+    // =====================================================
+
+    if (error || !data || data.length === 0) {
+
+      if (error) {
+        console.error(
+          'Search error:',
+          error.message
+        );
+      }
+
+      const { data: alternatives } = await supabase
+        .from('properties')
+        .select(`
+          bedrooms,
+          price,
+          completion_date,
+          location
+        `)
+        .eq('tenant_id', TENANT_ID)
+        .eq('available', true)
+        .ilike('type', `%${normalizedInterest}%`)
+        .ilike('location', `%${normalizedLocation}%`)
+        .limit(10);
+
+      let suggestion = null;
+
+      if (
+        alternatives &&
+        alternatives.length > 0
+      ) {
+
+        const beds = [
+          ...new Set(
+            alternatives
+              .map(r => r.bedrooms)
+              .filter(Boolean)
+          )
+        ].sort();
+
+        const prices = alternatives
+          .map(r => r.price)
+          .filter(Boolean);
+
+        const minPrice =
+          prices.length > 0
+            ? Math.min(...prices)
+            : 0;
+
+        const maxPrice =
+          prices.length > 0
+            ? Math.max(...prices)
+            : 0;
+
+        suggestion = {
+          availableBedrooms: beds,
+
+          priceRange: {
+            min: `KES ${Number(minPrice).toLocaleString()}`,
+            max: `KES ${Number(maxPrice).toLocaleString()}`
+          }
+        };
+      }
+
+      return {
+        properties: [],
+        count: 0,
+        suggestion
+      };
+    }
+
+    // =====================================================
+    // CLIENT-FACING CLEAN PROPERTIES
+    // IMPORTANT:
+    // NO RAW UUIDS EXPOSED TO CLAUDE
+    // =====================================================
+
+    const properties = data.map((p, i) => ({
+
+      // Claude uses ONLY this number
+      number: i + 1,
+
+      // NEVER expose p.id here
+      name: p.property_name,
+
+      project: p.project_name || null,
+
+      price: p.price
+        ? `KES ${Number(p.price).toLocaleString()}`
+        : 'Price on request',
+
+      rawPrice: p.price || 0,
+
+      bedrooms: p.bedrooms,
+
+      sqm: p.sqm || null,
+
+      location: p.location,
+
+      address: p.address,
+
+      completion: p.completion_date || null,
+
+      isOffplan: p.is_offplan || false,
+
+      description: p.description || null,
+
+      photo: p.photo_url || null
+    }));
+
+    // =====================================================
+    // INTERNAL BACKEND-ONLY ID MAP
+    // NEVER SHOW THIS TO CLAUDE DIRECTLY
+    // =====================================================
+
+    const propertyIdMap = {};
+
+    data.forEach((p, i) => {
+      propertyIdMap[i + 1] = p.id;
+    });
+
+    // =====================================================
+    // RETURN
+    // =====================================================
+
+    return {
+      properties,
+      propertyIdMap,
+      count: properties.length
+    };
+
+  } catch (err) {
+
+    console.error(
+      'searchProperties error:',
+      err.message
+    );
+
+    return {
+      properties: [],
+      count: 0
+    };
   }
-
-  // ✅ Format results
-  const properties = data.map((p, i) => ({
-    number: i + 1,
-    id: p.id,
-    name: p.property_name,
-    project: p.project_name || null,
-    price: `KES ${Number(p.price).toLocaleString()}`,
-    rawPrice: p.price,
-    bedrooms: p.bedrooms,
-    sqm: p.sqm,
-    location: p.location,
-    address: p.address,
-    completion: p.completion_date || null,
-    isOffplan: p.is_offplan,
-    description: p.description || null,
-    photo: p.photo_url || null
-  }));
-
-  return { properties, count: properties.length };
 }
 
 // ============================================
