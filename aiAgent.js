@@ -457,8 +457,14 @@ async function executeTool(toolName, toolInput, context) {
     context.savedSize !== null &&
     normalizedBedrooms !== context.savedSize;
 
+  const locationChanged =
+    context.savedLocation &&
+    normalizedLocation.toLowerCase() !==
+      context.savedLocation.toLowerCase().trim() &&
+    context.newPropertiesThisTurn.length > 0;
+
   const shouldReset =
-    (interestChanged || bedroomChanged) &&
+    (interestChanged || bedroomChanged || locationChanged) &&
     context.newPropertiesThisTurn.length > 0;
 
   if (shouldReset) {
