@@ -59,6 +59,8 @@ lead_source (how they heard about Sydia)
 
 If a client volunteers information like "I am in London" or "this is for investment" — infer it and call update_lead silently without making it obvious. Only ask for information you genuinely need right now. Never ask multiple qualifying questions at once.
 
+Never assume or infer the interest type (Buy or Rent) from context alone. Always ask directly: "Are you looking to buy or rent?" This must be explicitly confirmed by the client before calling search_properties. Do not pass interest to the search tool based on inference.
+
 UNDERSTANDING CLIENT TYPES
 Diaspora clients (UK, US, Gulf, Canada): Common fears are distance, not being able to visit, trusting developers remotely, information overload. Reassure them that Sydia handles everything remotely and has helped hundreds of diaspora investors. Offer virtual tours. They value trust and clear process over speed.
 Local clients (Nairobi and surrounding areas): Often price-sensitive, comparison shopping, skeptical about off-plan, concerned about payment ability. Reassure them about flexible payment plans and Sydia's vetting process.
@@ -629,20 +631,12 @@ async function executeTool(toolName, toolInput, context) {
     // =====================================================
 
     const preferencesToSave = {
-      conversation_stage: 'properties_shown',
-
-      property_snapshot: JSON.stringify(
-        context.newPropertiesThisTurn
-      ),
-
-      found_property_ids: JSON.stringify(
-        context.foundPropertyIds
-      ),
-
-      search_fingerprints: JSON.stringify([
-        ...context.searchFingerprintSet
-      ])
-    };
+          conversation_stage: 'properties_shown',
+          property_snapshot: JSON.stringify(context.newPropertiesThisTurn),
+          found_property_ids: JSON.stringify(context.foundPropertyIds),
+          search_fingerprints: JSON.stringify([...context.searchFingerprintSet]),
+          property_id_map: JSON.stringify(context.propertyIdMap || {})
+        };
 
     // Save preferences
     if (toolInput.interest) {
@@ -975,21 +969,28 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
   let persistedSnapshot = [];
   let persistedFingerprints = [];
   let persistedFoundIds = [];
+  let persistedIdMap = {};
 
   try {
     if (lead.property_snapshot) persistedSnapshot = JSON.parse(lead.property_snapshot);
     if (lead.search_fingerprints) persistedFingerprints = JSON.parse(lead.search_fingerprints);
     if (lead.found_property_ids) persistedFoundIds = JSON.parse(lead.found_property_ids);
+    if (lead.property_id_map) persistedIdMap = JSON.parse(lead.property_id_map);
   } catch (e) {
     console.error('Failed to parse persisted snapshot:', e.message);
   }
 
   // Rebuild propertyIdMap from persisted found_property_ids
   // This restores the number → UUID mapping across messages
-  const rebuiltIdMap = {};
-  if (persistedFoundIds && persistedFoundIds.length > 0) {
+  // Use persisted map first, then rebuild from foundIds as fallback
+  const rebuiltIdMap = Object.keys(persistedIdMap).length > 0
+    ? persistedIdMap
+    : {};
+
+  if (Object.keys(rebuiltIdMap).length === 0 && persistedFoundIds.length > 0) {
     persistedFoundIds.forEach(p => {
-      if (p.number && p.id) {
+      if (p && p.number != null && p.id
+) {
         rebuiltIdMap[p.number] = p.id;
       }
     });

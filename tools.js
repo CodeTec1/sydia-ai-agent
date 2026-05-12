@@ -108,6 +108,7 @@ async function updateLead(leadId, fields) {
     property_snapshot: 'property_snapshot',
     search_fingerprints: 'search_fingerprints',
     found_property_ids: 'found_property_ids',
+    property_id_map: 'property_id_map',
     lead_source: 'lead_source'
   };
 

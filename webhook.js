@@ -149,7 +149,8 @@ activeUsers.add(from);
             conversation_stage: null,
             property_snapshot: null,
             search_fingerprints: null,
-            found_property_ids: null
+            found_property_ids: null,
+            property_id_map: null
           })
           .eq('id', lead.id);
 
@@ -161,6 +162,7 @@ activeUsers.add(from);
         lead.property_snapshot = null;
         lead.search_fingerprints = null;
         lead.found_property_ids = null;
+        lead.property_id_map = null;
 
         // Clear conversation history for fresh session
         await tools.clearConversationHistory(lead.id);
