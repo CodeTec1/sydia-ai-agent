@@ -1008,7 +1008,7 @@ async function getConversationHistory(leadId) {
     .select('role, content, created_at')
     .eq('lead_id', leadId)
     .order('created_at', { ascending: true })
-    .limit(30);
+    .limit(10);
 
   return data || [];
 }

@@ -994,6 +994,21 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     console.error('Failed to parse persisted snapshot:', e.message);
   }
 
+  // ============================================
+  // Build stripped snapshot for Claude
+  // Removes huge descriptions/photos from context
+  // ============================================
+  const strippedSnapshot = persistedSnapshot.map(p => ({
+    number: p.number,
+    name: p.name,
+    location: p.location,
+    price: p.price,
+    bedrooms: p.bedrooms,
+    sqm: p.sqm,
+    completion: p.completion,
+    address: p.address
+  }));
+
   // Rebuild propertyIdMap from persisted found_property_ids
   // This restores the number → UUID mapping across messages
   // Use persisted map first, then rebuild from foundIds as fallback
@@ -1003,54 +1018,78 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
 
   if (Object.keys(rebuiltIdMap).length === 0 && persistedFoundIds.length > 0) {
     persistedFoundIds.forEach(p => {
-      if (p && p.number != null && p.id
-) {
+      if (p && p.number != null && p.id) {
         rebuiltIdMap[p.number] = p.id;
       }
     });
   }
 
   const context = {
-    leadId: lead.id,
-    leadName: lead.name || null,
-    leadPhone: cleanPhone,
-    currentSlotMap: lead.available_slots || null,
-    currentPropertyId: lead.selected_property_id || null,
-    newPropertiesThisTurn: [...persistedSnapshot],
-    foundPropertyIds: [...persistedFoundIds],
-    searchFingerprintSet: new Set(persistedFingerprints),
-    newlyAddedProperties: [],
-    savedLocation: lead.location || null,
-    savedSize: typeof lead.size === 'string' ? parseInt(lead.size, 10) || null : lead.size,
-    savedBudget: lead.budget ? Number(lead.budget) : null,
-    savedInterest: lead.interest || null,
-    completedBookings: 0,
-    propertyCounter: persistedFoundIds.length, // Start from where previous session left off
-    propertyIdMap: rebuiltIdMap,  // Built from persisted snapshot on load
-    toolCallsThisTurn: 0
-  };
+  leadId: lead.id,
+  leadName: lead.name || null,
+  leadPhone: cleanPhone,
+  currentSlotMap: lead.available_slots || null,
+  currentPropertyId: lead.selected_property_id || null,
+
+  // Full data preserved for webhook/property cards
+  newPropertiesThisTurn: [...persistedSnapshot],
+
+  // Stripped version only for Claude prompt context
+  promptPropertySnapshot: strippedSnapshot,
+
+  foundPropertyIds: [...persistedFoundIds],
+  searchFingerprintSet: new Set(persistedFingerprints),
+  newlyAddedProperties: [],
+  savedLocation: lead.location || null,
+  savedSize: typeof lead.size === 'string'
+    ? parseInt(lead.size, 10) || null
+    : lead.size,
+  savedBudget: lead.budget ? Number(lead.budget) : null,
+  savedInterest: lead.interest || null,
+  completedBookings: 0,
+  propertyCounter: persistedFoundIds.length,
+  propertyIdMap: rebuiltIdMap,
+  toolCallsThisTurn: 0
+};
 
   console.log('Processing message for lead:', lead.id, '| Phone:', cleanPhone);
 
   // Load inventory from database
   let availableOptionsContext = '';
-  try {
-    const options = await tools.getAvailableOptions();
-    if (options && options.locationSummary && options.locationSummary.length > 0) {
-      // Filter out Land — Sydia Realty only deals in Buy and Rent
-      const filteredTypes = (options.types || []).filter(t => t !== 'Land');
 
-      const locationDetails = options.locationSummary.map(loc =>
-        `  ${loc.location}: ${loc.bedrooms.join(', ')} | ${loc.priceRange} | ${loc.hasOffplan && loc.hasReady ? 'offplan + ready' : loc.hasOffplan ? 'offplan only' : 'ready only'}`
-      ).join('\n');
+  try {
+
+    // ============================================
+    // FIX 3: Skip huge inventory injection
+    // once properties already shown
+    // ============================================
+    if (isActiveSession && persistedSnapshot.length > 0) {
 
       availableOptionsContext =
-        `\n\nCURRENT DATABASE INVENTORY:\n` +
-        `Types: ${filteredTypes.join(', ')}\n` +
-        `Price range: ${options.overallPriceRange}\n` +
-        `\nBy location:\n${locationDetails}\n` +
-        `\nOnly suggest what is in this inventory. Never use outside knowledge.`;
+        '\n\nProperties have already been shown to this client. Use the PROPERTY REFERENCE below for any booking requests.';
+
+    } else {
+
+      const options = await tools.getAvailableOptions();
+
+      if (options && options.locationSummary && options.locationSummary.length > 0) {
+
+        // Filter out Land — Sydia Realty only deals in Buy and Rent
+        const filteredTypes = (options.types || []).filter(t => t !== 'Land');
+
+        const locationDetails = options.locationSummary.map(loc =>
+          `  ${loc.location}: ${loc.bedrooms.join(', ')} | ${loc.priceRange} | ${loc.hasOffplan && loc.hasReady ? 'offplan + ready' : loc.hasOffplan ? 'offplan only' : 'ready only'}`
+        ).join('\n');
+
+        availableOptionsContext =
+          `\n\nCURRENT DATABASE INVENTORY:\n` +
+          `Types: ${filteredTypes.join(', ')}\n` +
+          `Price range: ${options.overallPriceRange}\n` +
+          `\nBy location:\n${locationDetails}\n` +
+          `\nOnly suggest what is in this inventory. Never use outside knowledge.`;
+      }
     }
+
   } catch (err) {
     console.error('Failed to load inventory:', err.message);
   }
@@ -1075,15 +1114,20 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
 
   // Inject current property context so Claude never needs to re-search for IDs
   let propertyContext = '';
+
   if (['selecting_slot', 'booking_confirmed'].includes(lead.conversation_stage)) {
     if (lead.selected_property_id) {
-      propertyContext = `\n\nCURRENT SELECTED PROPERTY:\nProperty ID: ${lead.selected_property_id}\nUse this ID directly for get_available_slots and create_booking. Do not call search_properties again.`;
+      propertyContext =
+        `\n\nCURRENT SELECTED PROPERTY:\nProperty ID: ${lead.selected_property_id}\nUse this ID directly for get_available_slots and create_booking. Do not call search_properties again.`;
     }
   }
+
   // ALWAYS inject snapshot IDs when they exist
   // This prevents Claude from hallucinating property IDs
- // Inject clean property reference — numbers only, no UUIDs
+
+  // Inject clean property reference — numbers only, no UUIDs
   if (persistedFoundIds && persistedFoundIds.length > 0) {
+
     const refList = persistedFoundIds.map(p =>
       `Property ${p.number}: ${p.name}`
     ).join('\n');
@@ -1091,18 +1135,27 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     propertyContext += `\n\nPROPERTY REFERENCE:\n${refList}`;
   }
 
-  const systemContext = SYSTEM_PROMPT + availableOptionsContext + KNOWLEDGE_BASE + clientProfile + propertyContext;
+  const systemContext =
+    SYSTEM_PROMPT +
+    availableOptionsContext +
+    KNOWLEDGE_BASE +
+    clientProfile +
+    propertyContext;
 
   let finalText = null;
   let iterations = 0;
   const MAX_ITERATIONS = 10;
 
   while (iterations < MAX_ITERATIONS) {
+
     iterations++;
+
     console.log(`--- AI iteration ${iterations} ---`);
 
     let response;
+
     try {
+
       response = await client.messages.create({
         model: 'claude-sonnet-4-6',
         max_tokens: 1024,
@@ -1110,9 +1163,15 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
         tools: TOOL_DEFINITIONS,
         messages: messages
       });
+
     } catch (err) {
+
       console.error('Claude API error:', err.message);
-      return { text: 'Sorry, I am having trouble right now. Please try again.', properties: null };
+
+      return {
+        text: 'Sorry, I am having trouble right now. Please try again.',
+        properties: null
+      };
     }
 
     console.log('Stop reason:', response.stop_reason);
@@ -1125,30 +1184,45 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     console.log('Content blocks:', response.content.map(b => b.type).join(', '));
 
     if (response.stop_reason === 'end_turn') {
+
       for (const block of response.content) {
+
         if (block.type === 'text' && block.text?.trim()) {
           finalText = block.text;
           break;
         }
       }
+
       break;
     }
 
     if (response.stop_reason === 'tool_use') {
-      messages.push({ role: 'assistant', content: response.content });
+
+      messages.push({
+        role: 'assistant',
+        content: response.content
+      });
 
       const toolResults = [];
+
       for (const block of response.content) {
+
         if (block.type !== 'tool_use') continue;
 
         console.log(`Executing tool: ${block.name}`, JSON.stringify(block.input));
 
         let result;
+
         try {
+
           result = await executeTool(block.name, block.input, context);
+
           console.log(`Result:`, JSON.stringify(result).substring(0, 200));
+
         } catch (err) {
+
           console.error(`Tool error:`, err.message);
+
           result = { error: err.message };
         }
 
@@ -1159,16 +1233,22 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
         });
       }
 
-      messages.push({ role: 'user', content: toolResults });
+      messages.push({
+        role: 'user',
+        content: toolResults
+      });
 
       // If multiple bookings completed this turn, force a final message
       // This prevents hitting MAX_ITERATIONS without Claude getting to speak
       if (context.completedBookings >= 2) {
+
         console.log('Multiple bookings completed — forcing final confirmation message');
+
         finalText =
           `You are all set ${context.leadName || ''}! Both viewings are confirmed. ` +
           `Your agent will be in touch with the details for each one. ` +
           `Let me know if you need anything else!`;
+
         break;
       }
 
@@ -1179,32 +1259,52 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
   }
 
   console.log('AI final text:', finalText?.substring(0, 100));
-  console.log('New properties this turn:', context.newlyAddedProperties.length > 0 ? `YES — ${context.newlyAddedProperties.length} properties` : 'NO new properties');
+
+  console.log(
+    'New properties this turn:',
+    context.newlyAddedProperties.length > 0
+      ? `YES — ${context.newlyAddedProperties.length} properties`
+      : 'NO new properties'
+  );
+
   console.log('Snapshot size:', context.newPropertiesThisTurn.length);
 
   if (
-  finalText?.toLowerCase().includes('i found') && context.newPropertiesThisTurn.length === 0) {
+    finalText?.toLowerCase().includes('i found') &&
+    context.newPropertiesThisTurn.length === 0
+  ) {
     console.warn('POSSIBLE HALLUCINATION: Claude claimed to find properties without calling search tool');
   }
 
   if (
-  finalText?.toLowerCase().includes('we have') && context.newPropertiesThisTurn.length === 0) {
+    finalText?.toLowerCase().includes('we have') &&
+    context.newPropertiesThisTurn.length === 0
+  ) {
     console.warn('POSSIBLE HALLUCINATION: Claude claimed availability without calling search tool');
   }
 
   // If Claude ended turn with no text after a tool call, provide a contextual fallback
   if (!finalText || finalText.trim().length === 0) {
+
     const leadName = context.leadName || '';
+
     if (leadName) {
-      finalText = `Nice to meet you ${leadName}! What are you looking for today? Are you interested in buying or renting, and do you have a location or budget in mind?`;
+
+      finalText =
+        `Nice to meet you ${leadName}! What are you looking for today? ` +
+        `Are you interested in buying or renting, and do you have a location or budget in mind?`;
+
     } else {
+
       finalText = 'Thanks for that. How can I help you today?';
     }
+
     console.log('Empty AI response detected — using contextual fallback');
   }
 
   return {
     text: finalText,
+
     // Only send cards for newly added properties this turn
     properties: context.newlyAddedProperties.length > 0
       ? context.newlyAddedProperties
