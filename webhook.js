@@ -187,6 +187,73 @@ activeUsers.add(from);
         conversationHistory: history,
         sessionSummary: finalSummary
       });
+
+      // TIME-OF-DAY SLOT FILTERING
+      // When user says morning/afternoon/evening during slot selection,
+      // filter slots deterministically in code — never let Claude classify times
+      let slotFilterContext = '';
+
+      if (
+        lead.conversation_stage === 'selecting_slot' &&
+        lead.available_slots
+      ) {
+        const msg = userMessage.toLowerCase();
+
+        const wantsMorning = msg.includes('morning');
+        const wantsAfternoon = msg.includes('afternoon');
+        const wantsEvening = msg.includes('evening');
+
+        if (wantsMorning || wantsAfternoon || wantsEvening) {
+          try {
+            const slotMap = JSON.parse(lead.available_slots);
+
+            const filtered = Object.entries(slotMap)
+              .filter(([key, value]) => {
+                const startUtc = value.split('|')[0];
+                // Convert UTC to Kenya time (UTC+3)
+                const kenyaHour = (new Date(startUtc).getUTCHours() + 3) % 24;
+
+                if (wantsMorning) return kenyaHour >= 6 && kenyaHour < 12;
+                if (wantsAfternoon) return kenyaHour >= 12 && kenyaHour < 17;
+                if (wantsEvening) return kenyaHour >= 17;
+                return true;
+              })
+              .map(([key, value]) => {
+                const startUtc = value.split('|')[0];
+                const kenyaHour = (new Date(startUtc).getUTCHours() + 3) % 24;
+                const kenyaMinute = new Date(startUtc).getUTCMinutes();
+                const ampm = kenyaHour >= 12 ? 'pm' : 'am';
+                const displayHour = kenyaHour > 12 ? kenyaHour - 12 : kenyaHour === 0 ? 12 : kenyaHour;
+                const day = new Date(startUtc).toLocaleDateString('en-KE', {
+                  timeZone: 'Africa/Nairobi',
+                  weekday: 'short',
+                  day: 'numeric',
+                  month: 'short'
+                });
+                return `Slot ${key}: ${day} at ${displayHour}:${kenyaMinute.toString().padStart(2, '0')} ${ampm}`;
+              });
+
+            if (filtered.length > 0) {
+              slotFilterContext = `\n\nFILTERED SLOTS FOR CLIENT REQUEST:\nThe client asked for ${wantsMorning ? 'morning' : wantsAfternoon ? 'afternoon' : 'evening'} slots. Only these slots match (morning = before 12pm, afternoon = 12pm to 5pm, evening = after 5pm):\n${filtered.join('\n')}\n\nOnly present these filtered slots. Do NOT show other slots.`;
+              console.log('Slot filter applied:', filtered);
+            } else {
+              slotFilterContext = `\n\nNo ${wantsMorning ? 'morning' : wantsAfternoon ? 'afternoon' : 'evening'} slots are available. Tell the client honestly and offer the available slots from other times.`;
+              console.log('No slots match time filter');
+            }
+          } catch (e) {
+            console.error('Slot filtering error:', e.message);
+          }
+        }
+      }
+
+      const result = await processMessage({
+        userMessage,
+        lead,
+        conversationHistory: history,
+        sessionSummary: finalSummary,
+        slotFilterContext
+      });
+
       aiResponse = result.text?.trim()
       ? result.text
       : 'Hi, I am Nina from Sydia Realty. How can I help you today?';
@@ -208,6 +275,7 @@ activeUsers.add(from);
       : cleanResponse;
 
     await tools.saveMessage(lead.id, 'assistant', truncatedResponse);
+    console.log('Saved assistant response to history for lead:', lead.id);
     await sendMessage(from, truncatedResponse);
 
     if (properties && properties.length > 0) {

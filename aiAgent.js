@@ -710,6 +710,37 @@ async function executeTool(toolName, toolInput, context) {
 }
 
     case 'get_available_slots': {
+      // If we already have slots for this property, return cached slots
+      // This prevents Claude from re-fetching slots unnecessarily
+      if (
+        context.currentSlotMap &&
+        context.currentPropertyId &&
+        toolInput.propertyNumber &&
+        context.propertyIdMap[toolInput.propertyNumber] === context.currentPropertyId
+      ) {
+        console.log('Returning cached slots — same property already selected');
+        try {
+          const cachedSlotMap = JSON.parse(context.currentSlotMap);
+          const slots = Object.entries(cachedSlotMap).map(([key, value]) => {
+            const [start, end] = value.split('|');
+            const startDate = new Date(start);
+            const display = startDate.toLocaleString('en-KE', {
+              timeZone: 'Africa/Nairobi',
+              weekday: 'short',
+              day: 'numeric',
+              month: 'short',
+              hour: 'numeric',
+              minute: '2-digit',
+              hour12: true
+            });
+            return { number: parseInt(key), start, end, display };
+          });
+          return { slots, slotMap: cachedSlotMap, count: slots.length, fromCache: true };
+        } catch (e) {
+          // Fall through to normal slot fetching if cache parse fails
+        }
+      }
+
       // Resolve property number to real UUID using backend map
       let resolvedPropertyId = null;
 
@@ -973,7 +1004,7 @@ function buildClientProfile(lead, sessionSummary) {
 // ============================================
 // MAIN: Process message through AI
 // ============================================
-async function processMessage({ userMessage, lead, conversationHistory, sessionSummary }) {
+async function processMessage({ userMessage, lead, conversationHistory, sessionSummary, slotFilterContext = '' }) {
   const cleanPhone = lead.phone?.replace('whatsapp:', '').trim();
 
   const isActiveSession = ['properties_shown', 'selecting_slot', 'booking_confirmed']
@@ -1135,12 +1166,38 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     propertyContext += `\n\nPROPERTY REFERENCE:\n${refList}`;
   }
 
+  // DETERMINISTIC STATE ENFORCEMENT
+  // When we are in selecting_slot stage and slots exist,
+  // inject a strong reminder so Claude never asks for property again
+  let stateEnforcementContext = '';
+
+  if (lead.conversation_stage === 'selecting_slot' && lead.selected_property_id && lead.available_slots) {
+    const selectedProperty = persistedFoundIds.find(p => p.id === lead.selected_property_id);
+    const propertyName = selectedProperty?.name || 'the selected property';
+    const propertyNumber = selectedProperty?.number || '';
+
+    stateEnforcementContext = `
+
+CURRENT BOOKING STATE — CRITICAL:
+The client has already selected Property ${propertyNumber} (${propertyName}).
+The available slots have already been shown.
+The client is now choosing a time slot.
+DO NOT ask which property they want. That decision is already made.
+DO NOT call get_available_slots again. Slots are already shown.
+The client's next message is a slot selection. Map it to a slot number and call create_booking immediately.
+If they say "Saturday at 12 pm" or "the first one" or "option 2" — that is a slot selection. Create the booking.`;
+
+    console.log('State enforcement: selecting_slot mode active for property', lead.selected_property_id);
+  }
+
   const systemContext =
-    SYSTEM_PROMPT +
-    availableOptionsContext +
-    KNOWLEDGE_BASE +
-    clientProfile +
-    propertyContext;
+  SYSTEM_PROMPT +
+  availableOptionsContext +
+  KNOWLEDGE_BASE +
+  clientProfile +
+  propertyContext +
+  stateEnforcementContext +
+  slotFilterContext;
 
   let finalText = null;
   let iterations = 0;
