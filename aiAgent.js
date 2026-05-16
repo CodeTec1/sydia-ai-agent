@@ -767,9 +767,9 @@ async function executeTool(toolName, toolInput, context) {
         };
       }
 
-      const result = await tools.getAvailableSlots(resolvedPropertyId);
+      const slotResult = await tools.getAvailableSlots(resolvedPropertyId);
 
-      if (result.slotMap) {
+      if (slotResult.slotMap) {
         context.currentSlotMap = JSON.stringify(result.slotMap);
         context.currentPropertyId = resolvedPropertyId;
 
@@ -778,7 +778,7 @@ async function executeTool(toolName, toolInput, context) {
         });
       }
 
-      return result;
+      return slotResult;
     }
 
    case 'create_booking': {
