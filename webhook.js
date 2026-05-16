@@ -181,13 +181,6 @@ activeUsers.add(from);
     try {
       const finalSummary = sessionSummary || lead.notes || null;
 
-      const result = await processMessage({
-        userMessage,
-        lead,
-        conversationHistory: history,
-        sessionSummary: finalSummary
-      });
-
       // TIME-OF-DAY SLOT FILTERING
       // When user says morning/afternoon/evening during slot selection,
       // filter slots deterministically in code — never let Claude classify times
