@@ -12,6 +12,8 @@ const SYDIA_WHATSAPP = process.env.SYDIA_WHATSAPP_NUMBER;
 const TENANT_ID = process.env.SYDIA_TENANT_ID;
 
 const TEMPLATES = {
+  USER_REMINDER: 'HX83cf8d55cbc0b9c12527031e9a90fb7e',
+  USER_FOLLOWUP: 'HXb89f92fd9d2703e36be4959554dedd67',
   VIEWING_REMINDER: 'HXe2f13d97461952b669a22dd6a17081aa'
 };
 
@@ -106,16 +108,25 @@ async function send12HourReminders() {
 
     const humanReadableDateTime = `${formattedDate} at ${formattedTime}`;
 
-    // Send to client — plain text, no template needed
+    // Send to client via approved template
     if (leadPhone) {
-      await sendMessage(
-        leadPhone,
-        `Hi ${leadName}, just a reminder that your property viewing is tomorrow.\n\n` +
-        `Property: ${propertyName}\n` +
-        `Time: ${humanReadableDateTime}\n` +
-        `Address: ${propertyAddress}\n\n` +
-        `Your agent ${agentName} will meet you there. See you soon!`
-      );
+      try {
+        await twilioClient.messages.create({
+          from: SYDIA_WHATSAPP,
+          to: leadPhone,
+          contentSid: TEMPLATES.USER_REMINDER,
+          contentVariables: JSON.stringify({
+            "1": leadName,
+            "2": propertyName,
+            "3": formattedDate,
+            "4": formattedTime,
+            "5": propertyAddress
+          })
+        });
+        console.log('12h reminder sent to client via template:', leadPhone);
+      } catch (err) {
+        console.error('Failed to send 12h reminder to client:', err.message);
+      }
     }
 
     // Send to agent via template with CORRECT variable mapping
@@ -195,20 +206,29 @@ async function send1HourReminders() {
       hour12: true
     });
 
-    // Send to client — plain text
+    // Send to client via approved template
     if (leadPhone) {
-      await sendMessage(
-        leadPhone,
-        `Hi ${leadName}, your viewing starts in 1 hour!\n\n` +
-        `${propertyName}\n` +
-        `${propertyAddress}\n` +
-        `Time: ${formattedTime}\n\n` +
-        `${agentName} is ready for you. See you soon!`
-      );
+      try {
+        await twilioClient.messages.create({
+          from: SYDIA_WHATSAPP,
+          to: leadPhone,
+          contentSid: TEMPLATES.USER_REMINDER,
+          contentVariables: JSON.stringify({
+            "1": leadName,
+            "2": propertyName,
+            "3": formattedDate,
+            "4": formattedTime,
+            "5": propertyAddress
+          })
+        });
+        console.log('1h reminder sent to client via template:', leadPhone);
+      } catch (err) {
+        console.error('Failed to send 1h reminder to client:', err.message);
+      }
     }
 
-    // Send to agent via template — was missing, now added
-    // {{1}} = Client name, {{2}} = Phone, {{3}} = Property, {{4}} = Address, {{5}} = Date, {{6}} = Time
+    // Send to agent via template 
+   
     if (agentPhone) {
       await sendTemplateToAgent(agentPhone, TEMPLATES.VIEWING_REMINDER, {
         "1": leadName,
@@ -336,11 +356,20 @@ async function sendFollowups() {
 
     // Send natural conversational followup
     if (leadPhone) {
-      await sendMessage(
-        leadPhone,
-        `Hi ${leadName}, hope your viewing at ${propertyName} went well!\n\n` +
-        `How are you feeling about it? Any thoughts or questions I can help with?`
-      );
+      try {
+        await twilioClient.messages.create({
+          from: SYDIA_WHATSAPP,
+          to: leadPhone,
+          contentSid: TEMPLATES.USER_FOLLOWUP,
+          contentVariables: JSON.stringify({
+            "1": leadName,
+            "2": propertyName
+          })
+        });
+        console.log('Followup sent to client via template:', leadPhone);
+      } catch (err) {
+        console.error('Failed to send followup to client:', err.message);
+      }
 
       // Update lead to awaiting followup so Nina knows context
       await supabase
