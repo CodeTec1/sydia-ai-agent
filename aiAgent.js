@@ -1144,6 +1144,8 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
 
   let finalText = null;
   let iterations = 0;
+  let forcedContinuationUsed = false;
+  let toolUsedInLastStep = false;
   const MAX_ITERATIONS = 10;
 
   while (iterations < MAX_ITERATIONS) {
@@ -1186,11 +1188,23 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
     if (response.stop_reason === 'end_turn') {
 
       for (const block of response.content) {
-
         if (block.type === 'text' && block.text?.trim()) {
           finalText = block.text;
           break;
         }
+      }
+
+      const hadToolFlow = toolUsedInLastStep;
+      toolUsedInLastStep = false;
+
+      if (finalText && finalText.trim().length > 0) {
+        break;
+      }
+
+      if (hadToolFlow && !forcedContinuationUsed) {
+        console.log('Silent end_turn after tool — retrying once with no injection');
+        forcedContinuationUsed = true;
+        continue;
       }
 
       break;
@@ -1233,10 +1247,9 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
         });
       }
 
-      messages.push({
-        role: 'user',
-        content: toolResults
-      });
+       messages.push({ role: 'user', content: toolResults });
+
+       toolUsedInLastStep = true;
 
       // If multiple bookings completed this turn, force a final message
       // This prevents hitting MAX_ITERATIONS without Claude getting to speak
@@ -1285,22 +1298,28 @@ async function processMessage({ userMessage, lead, conversationHistory, sessionS
 
   // If Claude ended turn with no text after a tool call, provide a contextual fallback
   if (!finalText || finalText.trim().length === 0) {
+  console.log('Empty AI response detected — using contextual fallback');
 
-    const leadName = context.leadName || '';
+  const leadName = context?.leadName || '';
+  const location = context?.savedLocation;
+  const interest = context?.savedInterest;
+  const size = context?.savedSize;
+  const budget = context?.savedBudget;
 
-    if (leadName) {
-
-      finalText =
-        `Nice to meet you ${leadName}! What are you looking for today? ` +
-        `Are you interested in buying or renting, and do you have a location or budget in mind?`;
-
-    } else {
-
-      finalText = 'Thanks for that. How can I help you today?';
-    }
-
-    console.log('Empty AI response detected — using contextual fallback');
+  if (location && size && !budget) {
+    finalText = `What is your budget for the ${size} in ${location}${leadName ? `, ${leadName}` : ''}?`;
+  } else if (location && !size) {
+    finalText = `How many bedrooms are you looking for in ${location}${leadName ? `, ${leadName}` : ''}?`;
+  } else if (interest && !location) {
+    finalText = `Which area in Nairobi are you interested in${leadName ? `, ${leadName}` : ''}?`;
+  } else if (leadName && !interest) {
+    finalText = `Are you looking to buy or rent, ${leadName}?`;
+  } else if (leadName) {
+    finalText = `Sorry ${leadName}, I missed that — could you repeat what you are looking for?`;
+  } else {
+    finalText = `Sorry, I did not catch that. Could you repeat it?`;
   }
+}
 
   return {
     text: finalText,
